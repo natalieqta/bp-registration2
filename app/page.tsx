@@ -109,7 +109,14 @@ const generateCourtTimeSlots = (): TimeSlot[] => {
 };
 
 export default function Home() {
-  const [selectedDate, setSelectedDate] = useState<Date>(new Date());
+  // Initialize with today's date
+  const getInitialDate = (): Date => {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    return today;
+  };
+
+  const [selectedDate, setSelectedDate] = useState<Date>(getInitialDate());
   const [selectedTimeSlot, setSelectedTimeSlot] = useState<{ date: string; hour: number } | null>(null);
   const [reservations, setReservations] = useState<Reservation[]>([]);
   const [calendarBlocks, setCalendarBlocks] = useState<CalendarBlock[]>([]);
@@ -124,6 +131,8 @@ export default function Home() {
   const [showAdminPanel, setShowAdminPanel] = useState(false);
   const [showBlockModal, setShowBlockModal] = useState(false);
   const [showGroupEventModal, setShowGroupEventModal] = useState(false);
+  const [showMySessionsModal, setShowMySessionsModal] = useState(false);
+  const [showPurchaseCreditsModal, setShowPurchaseCreditsModal] = useState(false);
   const [selectedBayDuration, setSelectedBayDuration] = useState<30 | 60 | 90 | 120 | null>(null);
   const [selectedPrivateCourtDate, setSelectedPrivateCourtDate] = useState<string>('');
   const [viewMode, setViewMode] = useState<'courts' | 'bays' | 'both'>('courts');
@@ -157,10 +166,16 @@ export default function Home() {
   // Get dates for the current week
   const getWeekDates = (): Date[] => {
     const dates: Date[] = [];
-    const startOfWeek = new Date(selectedDate);
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    
+    // Use today as the reference point, or selectedDate if it's in the future
+    const referenceDate = selectedDate >= today ? selectedDate : today;
+    const startOfWeek = new Date(referenceDate);
     const day = startOfWeek.getDay();
     const diff = startOfWeek.getDate() - day;
     startOfWeek.setDate(diff);
+    startOfWeek.setHours(0, 0, 0, 0);
 
     for (let i = 0; i < 7; i++) {
       const date = new Date(startOfWeek);
@@ -197,23 +212,44 @@ export default function Home() {
     if (dateString) {
       const date = new Date(dateString);
       if (!isNaN(date.getTime())) {
-        setSelectedDate(date);
-        setSearchDate(dateString);
+        const today = new Date();
+        today.setHours(0, 0, 0, 0);
+        date.setHours(0, 0, 0, 0);
+        
+        // Don't allow selecting dates in the past - use today instead
+        const selectedDate = date < today ? today : date;
+        setSelectedDate(selectedDate);
+        setSearchDate(formatDate(selectedDate));
       }
     }
   };
 
   // Navigate weeks
   const navigateWeek = (direction: 'prev' | 'next') => {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    
     const newDate = new Date(selectedDate);
     newDate.setDate(newDate.getDate() + (direction === 'next' ? 7 : -7));
-    setSelectedDate(newDate);
+    
+    // Don't allow navigating to weeks before today
+    if (direction === 'prev' && newDate < today) {
+      // Set to today instead
+      setSelectedDate(today);
+    } else {
+      setSelectedDate(newDate);
+    }
     setSearchDate('');
   };
 
+  // Ensure selectedDate is at least today
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const effectiveSelectedDate = selectedDate < today ? today : selectedDate;
+  
   const weekDates = getWeekDates();
-  const currentWeekNumber = getWeekNumber(selectedDate);
-  const currentYear = selectedDate.getFullYear();
+  const currentWeekNumber = getWeekNumber(effectiveSelectedDate);
+  const currentYear = effectiveSelectedDate.getFullYear();
 
   const formatDate = (date: Date): string => {
     return date.toISOString().split('T')[0];
@@ -250,6 +286,14 @@ export default function Home() {
     return signups;
   };
 
+  // Check if a date/time is in the past
+  const isPastDateTime = (date: Date, hour: number): boolean => {
+    const now = new Date();
+    const bookingDateTime = new Date(date);
+    bookingDateTime.setHours(hour, 0, 0, 0);
+    return bookingDateTime < now;
+  };
+
   // Check if a time slot is blocked
   const isTimeSlotBlocked = (date: Date, hour: number): boolean => {
     const dateStr = formatDate(date);
@@ -261,6 +305,11 @@ export default function Home() {
 
   // Check if a court time slot is available (considering 2-hour bookings and blocks)
   const isCourtTimeSlotAvailable = (date: Date, hour: number): boolean => {
+    // Check if date/time is in the past
+    if (isPastDateTime(date, hour)) {
+      return false;
+    }
+
     // Check if booking would extend past closing time (8 PM = hour 20)
     // Latest booking time is 6 PM (6 PM - 8 PM = 2 hours)
     if (hour + COURT_BOOKING_DURATION_HOURS > 20) {
@@ -297,6 +346,15 @@ export default function Home() {
 
   // Check if a bay time slot is available
   const isBayTimeSlotAvailable = (date: Date, hour: number, minute: number, duration: number, bayNumber: number): boolean => {
+    // Check if date/time is in the past
+    if (isPastDateTime(date, hour)) {
+      // Also check if the end time would be in the past
+      const endHour = hour + Math.floor((minute + duration) / 60);
+      if (isPastDateTime(date, endHour)) {
+        return false;
+      }
+    }
+
     // Check if blocked
     const dateStr = formatDate(date);
     const startTime = hour * 60 + minute;
@@ -430,6 +488,12 @@ export default function Home() {
       return;
     }
 
+    const bookingDate = new Date(selectedTimeSlot.date);
+    if (isPastDateTime(bookingDate, selectedTimeSlot.hour)) {
+      alert('Cannot book a time slot in the past');
+      return;
+    }
+
     // Check if the time slot is available (considering 2-hour bookings)
     if (!isCourtTimeSlotAvailable(new Date(selectedTimeSlot.date), selectedTimeSlot.hour)) {
       alert('This time slot is not available (conflicts with existing 2-hour booking)');
@@ -475,6 +539,12 @@ export default function Home() {
       return;
     }
 
+    const bookingDate = new Date(selectedTimeSlot.date);
+    if (isPastDateTime(bookingDate, selectedTimeSlot.hour)) {
+      alert('Cannot book a time slot in the past');
+      return;
+    }
+
     const date = new Date(selectedTimeSlot.date);
     const hour = selectedTimeSlot.hour;
     const minute = 0; // Start at the top of the hour
@@ -514,6 +584,11 @@ export default function Home() {
 
   // Check if a private court time slot is available
   const isPrivateCourtTimeSlotAvailable = (date: Date, hour: number): boolean => {
+    // Check if date/time is in the past
+    if (isPastDateTime(date, hour)) {
+      return false;
+    }
+
     // Check if booking would extend past closing time (8 PM = hour 20)
     // Latest booking time is 6 PM (6 PM - 8 PM = 2 hours)
     if (hour + COURT_BOOKING_DURATION_HOURS > 20) {
@@ -583,6 +658,12 @@ export default function Home() {
     maxParticipants: number,
     creditsRequired: number
   ) => {
+    const eventDate = new Date(date);
+    if (isPastDateTime(eventDate, hour)) {
+      alert('Cannot create an event for a time in the past');
+      return;
+    }
+
     const newEvent: GroupTrainingEvent = {
       id: 'event-' + Date.now(),
       date,
@@ -639,6 +720,10 @@ export default function Home() {
     }
 
     const bookingDate = new Date(date);
+    if (isPastDateTime(bookingDate, hour)) {
+      alert('Cannot book a time slot in the past');
+      return;
+    }
 
     // Check if time slot is available
     if (!isPrivateCourtTimeSlotAvailable(bookingDate, hour)) {
@@ -957,6 +1042,7 @@ export default function Home() {
                           ? !isCourtTimeSlotAvailable(date, slot.hour) && !userSignedUp
                           : false;
                         const isUserInGroupEvent = groupEvent && currentUser && groupEvent.participants.includes(currentUser.id);
+                        const isPastTime = isPastDateTime(date, slot.hour);
                         
                         return (
                           <td
@@ -965,6 +1051,10 @@ export default function Home() {
                           >
                             <div
                               onClick={() => {
+                                if (isPastTime) {
+                                  alert('This time slot is in the past and cannot be booked');
+                                  return;
+                                }
                                 if (block) {
                                   // Show block info
                                   alert(`Blocked: ${block.reason}`);
@@ -987,7 +1077,9 @@ export default function Home() {
                                 h-16 rounded transition-all text-xs
                                 flex flex-col items-center justify-center
                                 ${
-                                  block
+                                  isPastTime
+                                    ? 'bg-[#0B0B0B] border border-[#9A9A9A]/30 cursor-not-allowed opacity-30'
+                                    : block
                                     ? 'bg-[#0B0B0B] border-2 border-[#ff4444]/50 cursor-pointer opacity-80'
                                     : groupEvent
                                     ? isUserInGroupEvent
@@ -1005,7 +1097,9 @@ export default function Home() {
                                 }
                               `}
                               title={
-                                block
+                                isPastTime
+                                  ? `${slot.label} - ${formatDate(date)} - Past (cannot be booked)`
+                                  : block
                                   ? `${slot.label} - ${formatDate(date)} - Blocked: ${block.reason}`
                                   : groupEvent
                                   ? `${slot.label} - ${formatDate(date)} - Group Event: ${groupEvent.title} (${groupEvent.participants.length}/${groupEvent.maxParticipants})`
@@ -1014,7 +1108,9 @@ export default function Home() {
                                   : `${slot.label} - ${formatDate(date)} - Click to ${isBayView ? 'book a bay' : 'view courts'}`
                               }
                             >
-                              {block ? (
+                              {isPastTime ? (
+                                <span className="text-xs font-bold text-[#9A9A9A] text-center px-1">PAST</span>
+                              ) : block ? (
                                 <span className="text-xs font-bold text-[#ff4444] text-center px-1">BLOCKED</span>
                               ) : groupEvent ? (
                                 <>
@@ -1177,16 +1273,22 @@ export default function Home() {
                   </>
                 ) : (
                   <>
-                    <button
+                    <button 
                       onClick={() => setShowPrivateCourtModal(true)}
                       className="w-full py-3 bg-[#FFC700] text-black font-black rounded-lg hover:bg-[#FFD400] transition-all shadow-lg shadow-[#FFC700]/50 uppercase tracking-wide"
                     >
                       Book Private Court
                     </button>
-                    <button className="w-full py-3 bg-transparent border-2 border-[#FFC700]/50 text-[#FFC700] font-bold rounded-lg hover:bg-[#FFC700]/10 hover:border-[#FFC700] hover:text-[#FFD400] transition-all uppercase tracking-wide">
+                    <button 
+                      onClick={() => setShowMySessionsModal(true)}
+                      className="w-full py-3 bg-transparent border-2 border-[#FFC700]/50 text-[#FFC700] font-bold rounded-lg hover:bg-[#FFC700]/10 hover:border-[#FFC700] hover:text-[#FFD400] transition-all uppercase tracking-wide"
+                    >
                       My Sessions
                     </button>
-                    <button className="w-full py-3 bg-transparent border-2 border-[#FFC700]/50 text-[#FFC700] font-bold rounded-lg hover:bg-[#FFC700]/10 hover:border-[#FFC700] hover:text-[#FFD400] transition-all uppercase tracking-wide">
+                    <button 
+                      onClick={() => setShowPurchaseCreditsModal(true)}
+                      className="w-full py-3 bg-transparent border-2 border-[#FFC700]/50 text-[#FFC700] font-bold rounded-lg hover:bg-[#FFC700]/10 hover:border-[#FFC700] hover:text-[#FFD400] transition-all uppercase tracking-wide"
+                    >
                       Purchase Credits
                     </button>
                   </>
@@ -1795,6 +1897,287 @@ export default function Home() {
               }}
               onCancel={() => setShowGroupEventModal(false)}
             />
+          </div>
+        </div>
+      )}
+
+      {/* My Sessions Modal */}
+      {showMySessionsModal && currentUser && (
+        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center z-50">
+          <div className="premium-card rounded-xl p-6 max-w-2xl w-full mx-4 max-h-[90vh] overflow-y-auto">
+            <div className="flex justify-between items-center mb-4">
+              <h3 className="text-2xl font-black text-[#FFC700] uppercase tracking-tight">My Sessions</h3>
+              <button
+                onClick={() => setShowMySessionsModal(false)}
+                className="text-[#B3B3B3] hover:text-[#FFC700] text-2xl leading-none font-bold transition-colors"
+              >
+                ×
+              </button>
+            </div>
+
+            <div className="space-y-4">
+              {/* Court Bookings */}
+              <div>
+                <h4 className="text-lg font-black text-[#FFC700] mb-3 uppercase tracking-tight">Court Bookings</h4>
+                {reservations.filter(r => r.type === 'court' && r.userId === currentUser.id).length === 0 ? (
+                  <p className="text-[#B3B3B3]">No court bookings</p>
+                ) : (
+                  <div className="space-y-2">
+                    {reservations
+                      .filter(r => r.type === 'court' && r.userId === currentUser.id)
+                      .map((res, idx) => {
+                        const courtRes = res as CourtReservation;
+                        return (
+                          <div key={idx} className="p-3 rounded-lg border border-[#FFC700]/20 bg-[#1A1A1A]">
+                            <div className="flex justify-between items-center">
+                              <div>
+                                <p className="font-black text-[#FFC700] uppercase">{courtRes.courtType} Court</p>
+                                <p className="text-sm text-[#B3B3B3]">
+                                  {new Date(courtRes.date).toLocaleDateString('en-US', { 
+                                    weekday: 'long', 
+                                    month: 'long', 
+                                    day: 'numeric',
+                                    year: 'numeric'
+                                  })} • {getTimeLabel(courtRes.hour)} - {getTimeLabel(courtRes.hour + 2)}
+                                </p>
+                              </div>
+                              <span className="px-3 py-1 bg-[#FFC700] text-black rounded-lg text-sm font-black uppercase">
+                                2 Hours
+                              </span>
+                            </div>
+                          </div>
+                        );
+                      })}
+                  </div>
+                )}
+              </div>
+
+              {/* Bay Bookings */}
+              <div>
+                <h4 className="text-lg font-black text-[#FFC700] mb-3 uppercase tracking-tight">Bay Bookings</h4>
+                {reservations.filter(r => r.type === 'bay' && r.userId === currentUser.id).length === 0 ? (
+                  <p className="text-[#B3B3B3]">No bay bookings</p>
+                ) : (
+                  <div className="space-y-2">
+                    {reservations
+                      .filter(r => r.type === 'bay' && r.userId === currentUser.id)
+                      .map((res, idx) => {
+                        const bayRes = res as BayReservation;
+                        const endTime = bayRes.startHour * 60 + bayRes.startMinute + bayRes.duration;
+                        const endHour = Math.floor(endTime / 60);
+                        const endMinute = endTime % 60;
+                        const endTimeLabel = endMinute > 0 
+                          ? `${endHour}:${endMinute.toString().padStart(2, '0')}`
+                          : getTimeLabel(endHour);
+                        return (
+                          <div key={idx} className="p-3 rounded-lg border border-[#FFC700]/20 bg-[#1A1A1A]">
+                            <div className="flex justify-between items-center">
+                              <div>
+                                <p className="font-black text-[#FFC700] uppercase">Bay {bayRes.bayNumber}</p>
+                                <p className="text-sm text-[#B3B3B3]">
+                                  {new Date(bayRes.date).toLocaleDateString('en-US', { 
+                                    weekday: 'long', 
+                                    month: 'long', 
+                                    day: 'numeric',
+                                    year: 'numeric'
+                                  })} • {getTimeLabel(bayRes.startHour)} - {endTimeLabel}
+                                </p>
+                              </div>
+                              <span className="px-3 py-1 bg-[#FFC700] text-black rounded-lg text-sm font-black uppercase">
+                                {bayRes.duration} min
+                              </span>
+                            </div>
+                          </div>
+                        );
+                      })}
+                  </div>
+                )}
+              </div>
+
+              {/* Private Court Bookings */}
+              <div>
+                <h4 className="text-lg font-black text-[#FFC700] mb-3 uppercase tracking-tight">Private Court Bookings</h4>
+                {reservations.filter(r => r.type === 'private-court' && r.userId === currentUser.id).length === 0 ? (
+                  <p className="text-[#B3B3B3]">No private court bookings</p>
+                ) : (
+                  <div className="space-y-2">
+                    {reservations
+                      .filter(r => r.type === 'private-court' && r.userId === currentUser.id)
+                      .map((res, idx) => {
+                        const privateRes = res as PrivateCourtReservation;
+                        return (
+                          <div key={idx} className="p-3 rounded-lg border border-[#FFC700]/20 bg-[#1A1A1A]">
+                            <div className="flex justify-between items-center">
+                              <div>
+                                <p className="font-black text-[#FFC700] uppercase">Private Court</p>
+                                <p className="text-sm text-[#B3B3B3]">
+                                  {new Date(privateRes.date).toLocaleDateString('en-US', { 
+                                    weekday: 'long', 
+                                    month: 'long', 
+                                    day: 'numeric',
+                                    year: 'numeric'
+                                  })} • {getTimeLabel(privateRes.hour)} - {getTimeLabel(privateRes.hour + 2)}
+                                </p>
+                              </div>
+                              <span className="px-3 py-1 bg-[#FFC700] text-black rounded-lg text-sm font-black uppercase">
+                                2 Hours
+                              </span>
+                            </div>
+                          </div>
+                        );
+                      })}
+                  </div>
+                )}
+              </div>
+
+              {/* Group Training Events */}
+              <div>
+                <h4 className="text-lg font-black text-[#FFC700] mb-3 uppercase tracking-tight">Group Training Events</h4>
+                {groupTrainingEvents.filter(e => e.participants.includes(currentUser.id)).length === 0 ? (
+                  <p className="text-[#B3B3B3]">No group training events</p>
+                ) : (
+                  <div className="space-y-2">
+                    {groupTrainingEvents
+                      .filter(e => e.participants.includes(currentUser.id))
+                      .map((event) => (
+                        <div key={event.id} className="p-3 rounded-lg border border-[#FFC700]/20 bg-[#1A1A1A]">
+                          <div className="flex justify-between items-center">
+                            <div>
+                              <p className="font-black text-[#FFC700] uppercase">{event.title}</p>
+                              <p className="text-sm text-[#B3B3B3]">
+                                {new Date(event.date).toLocaleDateString('en-US', { 
+                                  weekday: 'long', 
+                                  month: 'long', 
+                                  day: 'numeric',
+                                  year: 'numeric'
+                                })} • {getTimeLabel(event.hour)} - {getTimeLabel(event.hour + event.duration)}
+                              </p>
+                              <p className="text-xs text-[#9A9A9A] mt-1">{event.description}</p>
+                            </div>
+                            <span className="px-3 py-1 bg-[#2E6B57] text-white rounded-lg text-sm font-black uppercase">
+                              {event.duration}h
+                            </span>
+                          </div>
+                        </div>
+                      ))}
+                  </div>
+                )}
+              </div>
+
+              {/* Summary */}
+              <div className="mt-6 p-4 rounded-lg border-2 border-[#FFC700]" style={{
+                background: 'linear-gradient(135deg, rgba(255, 199, 0, 0.2) 0%, rgba(255, 212, 0, 0.15) 100%)'
+              }}>
+                <p className="font-black text-[#FFC700] uppercase text-lg">
+                  Total Sessions: {
+                    reservations.filter(r => r.userId === currentUser.id).length +
+                    groupTrainingEvents.filter(e => e.participants.includes(currentUser.id)).length
+                  }
+                </p>
+              </div>
+            </div>
+
+            <button
+              onClick={() => setShowMySessionsModal(false)}
+              className="w-full mt-4 py-2 bg-transparent border-2 border-[#FFC700]/50 text-[#FFC700] font-bold rounded-lg hover:bg-[#FFC700]/10 hover:border-[#FFC700] transition-all uppercase tracking-wide"
+            >
+              Close
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Purchase Credits Modal */}
+      {showPurchaseCreditsModal && currentUser && (
+        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center z-50">
+          <div className="premium-card rounded-xl p-6 max-w-lg w-full mx-4 max-h-[90vh] overflow-y-auto">
+            <div className="flex justify-between items-center mb-4">
+              <h3 className="text-2xl font-black text-[#FFC700] uppercase tracking-tight">Purchase Credits</h3>
+              <button
+                onClick={() => setShowPurchaseCreditsModal(false)}
+                className="text-[#B3B3B3] hover:text-[#FFC700] text-2xl leading-none font-bold transition-colors"
+              >
+                ×
+              </button>
+            </div>
+
+            <div className="mb-4 p-4 rounded-lg border border-[#FFC700]/20" style={{
+              background: 'linear-gradient(145deg, #1A1A1A 0%, #111111 100%)'
+            }}>
+              <p className="text-sm text-[#B3B3B3] mb-2">
+                <strong className="text-[#FFC700]">Current Credits:</strong> {currentUser.credits}
+              </p>
+              <p className="text-xs text-[#9A9A9A]">
+                Each session costs 1 credit. Buy 4 sessions, get the 5th free!
+              </p>
+            </div>
+
+            <div className="space-y-3">
+              {[5, 10, 20, 50].map((credits) => {
+                // Buy 4 get 5th free: For every 5 credits, pay for 4
+                const sessionsToPayFor = Math.floor(credits / 5) * 4 + (credits % 5);
+                const price = sessionsToPayFor * 14;
+                const savings = (credits - sessionsToPayFor) * 14;
+                const pricePerCredit = price / credits;
+
+                return (
+                  <div
+                    key={credits}
+                    className="p-4 rounded-lg border-2 border-[#FFC700]/30 hover:border-[#FFC700] transition-all cursor-pointer"
+                    style={{
+                      background: 'linear-gradient(145deg, #1A1A1A 0%, #111111 100%)'
+                    }}
+                    onClick={() => {
+                      setCurrentUser({ ...currentUser, credits: currentUser.credits + credits });
+                      setShowPurchaseCreditsModal(false);
+                      alert(`Successfully purchased ${credits} credits for $${price.toFixed(2)}!`);
+                    }}
+                  >
+                    <div className="flex justify-between items-center">
+                      <div>
+                        <div className="flex items-center gap-2">
+                          <span className="text-xl font-black text-[#FFC700] uppercase">{credits} Credits</span>
+                          {savings > 0 && (
+                            <span className="px-2 py-1 bg-[#2E6B57] text-white rounded text-xs font-bold uppercase">
+                              Save ${savings.toFixed(2)}
+                            </span>
+                          )}
+                        </div>
+                        <p className="text-sm text-[#B3B3B3] mt-1">
+                          {credits} sessions • ${pricePerCredit.toFixed(2)} per credit
+                        </p>
+                        {savings > 0 && (
+                          <p className="text-xs text-[#9A9A9A] mt-1">
+                            You pay for {sessionsToPayFor} sessions, get {credits - sessionsToPayFor} free!
+                          </p>
+                        )}
+                      </div>
+                      <div className="text-right">
+                        <p className="text-2xl font-black text-[#FFC700]">${price.toFixed(2)}</p>
+                        {savings > 0 && (
+                          <p className="text-xs text-[#9A9A9A] line-through">
+                            ${(credits * 14).toFixed(2)}
+                          </p>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+
+            <div className="mt-4 p-3 rounded-lg border border-[#FFC700]/20 bg-[#0B0B0B]">
+              <p className="text-xs text-[#9A9A9A] text-center">
+                <strong className="text-[#FFC700]">Buy 4, Get 5th Free:</strong> For every 5 credits purchased, you only pay for 4 sessions ($14 each)
+              </p>
+            </div>
+
+            <button
+              onClick={() => setShowPurchaseCreditsModal(false)}
+              className="w-full mt-4 py-2 bg-transparent border-2 border-[#FFC700]/50 text-[#FFC700] font-bold rounded-lg hover:bg-[#FFC700]/10 hover:border-[#FFC700] transition-all uppercase tracking-wide"
+            >
+              Close
+            </button>
           </div>
         </div>
       )}
