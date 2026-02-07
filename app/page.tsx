@@ -25,7 +25,45 @@ interface BayReservation {
   type: 'bay';
 }
 
-type Reservation = CourtReservation | BayReservation;
+interface PrivateCourtReservation {
+  date: string;
+  hour: number;
+  userId: string;
+  type: 'private-court';
+}
+
+interface CalendarBlock {
+  id: string;
+  date: string;
+  startHour: number;
+  endHour: number;
+  reason: string;
+  type: 'block';
+}
+
+interface GroupTrainingEvent {
+  id: string;
+  date: string;
+  hour: number;
+  duration: number; // hours
+  title: string;
+  description: string;
+  maxParticipants: number;
+  creditsRequired: number;
+  participants: string[];
+  type: 'group-training';
+}
+
+type Reservation = CourtReservation | BayReservation | PrivateCourtReservation;
+type CalendarItem = Reservation | CalendarBlock | GroupTrainingEvent;
+
+interface User {
+  id: string;
+  email: string;
+  name: string;
+  role: 'member' | 'admin';
+  credits: number;
+}
 
 interface CourtTypeSignups {
   beginner: string[];
@@ -74,17 +112,23 @@ export default function Home() {
   const [selectedDate, setSelectedDate] = useState<Date>(new Date());
   const [selectedTimeSlot, setSelectedTimeSlot] = useState<{ date: string; hour: number } | null>(null);
   const [reservations, setReservations] = useState<Reservation[]>([]);
-  const [isSignedIn, setIsSignedIn] = useState(false);
-  const [userCredits, setUserCredits] = useState(10);
+  const [calendarBlocks, setCalendarBlocks] = useState<CalendarBlock[]>([]);
+  const [groupTrainingEvents, setGroupTrainingEvents] = useState<GroupTrainingEvent[]>([]);
+  const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [loginMode, setLoginMode] = useState<'member' | 'admin'>('member');
   const [showBookingModal, setShowBookingModal] = useState(false);
   const [showBayBookingModal, setShowBayBookingModal] = useState(false);
+  const [showPrivateCourtModal, setShowPrivateCourtModal] = useState(false);
+  const [showAdminPanel, setShowAdminPanel] = useState(false);
+  const [showBlockModal, setShowBlockModal] = useState(false);
+  const [showGroupEventModal, setShowGroupEventModal] = useState(false);
   const [selectedBayDuration, setSelectedBayDuration] = useState<30 | 60 | 90 | 120 | null>(null);
+  const [selectedPrivateCourtDate, setSelectedPrivateCourtDate] = useState<string>('');
   const [viewMode, setViewMode] = useState<'courts' | 'bays' | 'both'>('courts');
   const [searchDate, setSearchDate] = useState<string>('');
-  const [searchWeek, setSearchWeek] = useState<string>('');
-  const [currentUserId] = useState<string>('user-' + Math.random().toString(36).substr(2, 9));
+  const [selectedCourtLevel, setSelectedCourtLevel] = useState<'beginner' | 'intermediate' | 'advanced' | 'challenge' | 'all'>('all');
 
   const timeSlots = generateTimeSlots(); // For bays (hourly)
   const courtTimeSlots = generateCourtTimeSlots(); // For courts (2-hour intervals)
@@ -159,25 +203,12 @@ export default function Home() {
     }
   };
 
-  // Handle week search
-  const handleWeekSearch = (weekInput: string) => {
-    if (weekInput) {
-      const [year, week] = weekInput.split('-W').map(Number);
-      if (year && week && week >= 1 && week <= 53) {
-        const date = getDateFromWeek(year, week);
-        setSelectedDate(date);
-        setSearchWeek(weekInput);
-      }
-    }
-  };
-
   // Navigate weeks
   const navigateWeek = (direction: 'prev' | 'next') => {
     const newDate = new Date(selectedDate);
     newDate.setDate(newDate.getDate() + (direction === 'next' ? 7 : -7));
     setSelectedDate(newDate);
     setSearchDate('');
-    setSearchWeek('');
   };
 
   const weekDates = getWeekDates();
@@ -219,11 +250,25 @@ export default function Home() {
     return signups;
   };
 
-  // Check if a court time slot is available (considering 2-hour bookings)
+  // Check if a time slot is blocked
+  const isTimeSlotBlocked = (date: Date, hour: number): boolean => {
+    const dateStr = formatDate(date);
+    return calendarBlocks.some((block) => {
+      if (block.date !== dateStr) return false;
+      return hour >= block.startHour && hour < block.endHour;
+    });
+  };
+
+  // Check if a court time slot is available (considering 2-hour bookings and blocks)
   const isCourtTimeSlotAvailable = (date: Date, hour: number): boolean => {
     // Check if booking would extend past closing time (8 PM = hour 20)
     // Latest booking time is 6 PM (6 PM - 8 PM = 2 hours)
     if (hour + COURT_BOOKING_DURATION_HOURS > 20) {
+      return false;
+    }
+
+    // Check if blocked
+    if (isTimeSlotBlocked(date, hour) || isTimeSlotBlocked(date, hour + 1)) {
       return false;
     }
 
@@ -252,9 +297,17 @@ export default function Home() {
 
   // Check if a bay time slot is available
   const isBayTimeSlotAvailable = (date: Date, hour: number, minute: number, duration: number, bayNumber: number): boolean => {
+    // Check if blocked
     const dateStr = formatDate(date);
     const startTime = hour * 60 + minute;
     const endTime = startTime + duration;
+    
+    // Check if any part of the duration overlaps with a block
+    for (let checkHour = hour; checkHour < hour + Math.ceil(duration / 60); checkHour++) {
+      if (isTimeSlotBlocked(date, checkHour)) {
+        return false;
+      }
+    }
 
     const bayReservations = reservations.filter(
       (r) => r.type === 'bay' && r.date === dateStr && r.bayNumber === bayNumber
@@ -317,8 +370,18 @@ export default function Home() {
   // Get total signups count for a time slot (courts)
   const getTotalSignups = (date: Date, hour: number): number => {
     const signups = getSignupsForTimeSlot(date, hour);
-    return signups.beginner.length + signups.intermediate.length + 
-           signups.advanced.length + signups.challenge.length;
+    if (selectedCourtLevel === 'all') {
+      return signups.beginner.length + signups.intermediate.length + 
+             signups.advanced.length + signups.challenge.length;
+    }
+    return signups[selectedCourtLevel].length;
+  };
+
+  // Get signups for selected level
+  const getSignupsForSelectedLevel = (date: Date, hour: number): number => {
+    if (selectedCourtLevel === 'all') return getTotalSignups(date, hour);
+    const signups = getSignupsForTimeSlot(date, hour);
+    return signups[selectedCourtLevel].length;
   };
 
   // Get bay reservation count for a time slot
@@ -362,7 +425,7 @@ export default function Home() {
 
   // Handle booking for a specific court type
   const handleBooking = (courtType: 'beginner' | 'intermediate' | 'advanced' | 'challenge') => {
-    if (!selectedTimeSlot || userCredits < 1) {
+    if (!selectedTimeSlot || !currentUser || currentUser.credits < 1) {
       alert('Insufficient credits');
       return;
     }
@@ -396,7 +459,10 @@ export default function Home() {
         userId: currentUserId,
       },
     ]);
-    setUserCredits(userCredits - 1);
+    // Update user credits
+    if (currentUser) {
+      setCurrentUser({ ...currentUser, credits: currentUser.credits - 1 });
+    }
     setShowBookingModal(false);
     setSelectedTimeSlot(null);
     alert(`Successfully signed up for ${courtType} court for 2 hours!`);
@@ -404,7 +470,7 @@ export default function Home() {
 
   // Handle bay booking
   const handleBayBooking = (duration: 30 | 60 | 90 | 120, bayNumber: number) => {
-    if (!selectedTimeSlot || userCredits < 1) {
+    if (!selectedTimeSlot || !currentUser || currentUser.credits < 1) {
       alert('Insufficient credits');
       return;
     }
@@ -437,29 +503,215 @@ export default function Home() {
         userId: currentUserId,
       },
     ]);
-    setUserCredits(userCredits - 1);
+    // Update user credits
+    if (currentUser) {
+      setCurrentUser({ ...currentUser, credits: currentUser.credits - 1 });
+    }
     setShowBayBookingModal(false);
     setSelectedTimeSlot(null);
     alert(`Successfully booked Bay ${bayNumber} for ${duration} minutes!`);
   };
 
+  // Check if a private court time slot is available
+  const isPrivateCourtTimeSlotAvailable = (date: Date, hour: number): boolean => {
+    // Check if booking would extend past closing time (8 PM = hour 20)
+    // Latest booking time is 6 PM (6 PM - 8 PM = 2 hours)
+    if (hour + COURT_BOOKING_DURATION_HOURS > 20) {
+      return false;
+    }
+
+    // Must be a valid 2-hour interval (even hours)
+    if (hour % 2 !== 0 || hour > 18) {
+      return false;
+    }
+
+    const dateStr = formatDate(date);
+    
+    // Check conflicts with regular court reservations
+    const courtReservations = reservations.filter(
+      (r) => r.type === 'court' && r.date === dateStr
+    ) as CourtReservation[];
+
+    for (const reservation of courtReservations) {
+      if (hour >= reservation.hour && hour < reservation.hour + COURT_BOOKING_DURATION_HOURS) {
+        return false;
+      }
+      if (hour < reservation.hour + COURT_BOOKING_DURATION_HOURS && hour + COURT_BOOKING_DURATION_HOURS > reservation.hour) {
+        return false;
+      }
+    }
+
+    // Check conflicts with other private court reservations
+    const privateCourtReservations = reservations.filter(
+      (r) => r.type === 'private-court' && r.date === dateStr
+    ) as PrivateCourtReservation[];
+
+    for (const reservation of privateCourtReservations) {
+      if (hour >= reservation.hour && hour < reservation.hour + COURT_BOOKING_DURATION_HOURS) {
+        return false;
+      }
+      if (hour < reservation.hour + COURT_BOOKING_DURATION_HOURS && hour + COURT_BOOKING_DURATION_HOURS > reservation.hour) {
+        return false;
+      }
+    }
+
+    return true;
+  };
+
+  // Admin: Create calendar block
+  const handleCreateBlock = (date: string, startHour: number, endHour: number, reason: string) => {
+    const newBlock: CalendarBlock = {
+      id: 'block-' + Date.now(),
+      date,
+      startHour,
+      endHour,
+      reason,
+      type: 'block',
+    };
+    setCalendarBlocks([...calendarBlocks, newBlock]);
+    setShowBlockModal(false);
+    alert('Calendar block created successfully!');
+  };
+
+  // Admin: Create group training event
+  const handleCreateGroupEvent = (
+    date: string,
+    hour: number,
+    duration: number,
+    title: string,
+    description: string,
+    maxParticipants: number,
+    creditsRequired: number
+  ) => {
+    const newEvent: GroupTrainingEvent = {
+      id: 'event-' + Date.now(),
+      date,
+      hour,
+      duration,
+      title,
+      description,
+      maxParticipants,
+      creditsRequired,
+      participants: [],
+      type: 'group-training',
+    };
+    setGroupTrainingEvents([...groupTrainingEvents, newEvent]);
+    setShowGroupEventModal(false);
+    alert('Group training event created successfully!');
+  };
+
+  // Member: Join group training event
+  const handleJoinGroupEvent = (eventId: string) => {
+    const event = groupTrainingEvents.find(e => e.id === eventId);
+    if (!event || !currentUser) return;
+
+    if (event.participants.length >= event.maxParticipants) {
+      alert('This event is full');
+      return;
+    }
+
+    if (currentUser.credits < event.creditsRequired) {
+      alert(`Insufficient credits. This event requires ${event.creditsRequired} credits.`);
+      return;
+    }
+
+    if (event.participants.includes(currentUser.id)) {
+      alert('You are already registered for this event');
+      return;
+    }
+
+    setGroupTrainingEvents(
+      groupTrainingEvents.map(e =>
+        e.id === eventId
+          ? { ...e, participants: [...e.participants, currentUser.id] }
+          : e
+      )
+    );
+    setCurrentUser({ ...currentUser, credits: currentUser.credits - event.creditsRequired });
+    alert(`Successfully joined ${event.title}!`);
+  };
+
+  // Handle private court booking
+  const handlePrivateCourtBooking = (date: string, hour: number) => {
+    if (!currentUser || currentUser.credits < 4) {
+      alert('Insufficient credits. Private court booking requires 4 credits.');
+      return;
+    }
+
+    const bookingDate = new Date(date);
+
+    // Check if time slot is available
+    if (!isPrivateCourtTimeSlotAvailable(bookingDate, hour)) {
+      alert('This time slot is not available for private court booking');
+      return;
+    }
+
+    // Check if user already has a private court booking at this time
+    const dateStr = formatDate(bookingDate);
+    const existingPrivateBooking = reservations.some(
+      (r) => r.type === 'private-court' && r.date === dateStr && r.hour === hour && r.userId === currentUserId
+    );
+
+    if (existingPrivateBooking) {
+      alert('You already have a private court booking for this time slot');
+      return;
+    }
+
+    setReservations([
+      ...reservations,
+      {
+        type: 'private-court',
+        date: dateStr,
+        hour,
+        userId: currentUserId,
+      },
+    ]);
+    // Update user credits
+    if (currentUser) {
+      setCurrentUser({ ...currentUser, credits: currentUser.credits - 4 });
+    }
+    setShowPrivateCourtModal(false);
+    setSelectedPrivateCourtDate('');
+    alert(`Successfully booked private court for 2 hours!`);
+  };
+
+  // Mock users database (in production, this would be a backend)
+  const mockUsers: User[] = [
+    { id: 'member-1', email: 'member@example.com', name: 'John Member', role: 'member', credits: 10 },
+    { id: 'admin-1', email: 'admin@blazingpaddles.com', name: 'Admin User', role: 'admin', credits: 999 },
+  ];
+
   const handleSignIn = (e: React.FormEvent) => {
     e.preventDefault();
     // Simple sign-in logic - in production, this would authenticate with a backend
     if (email && password) {
-      setIsSignedIn(true);
-      setEmail('');
-      setPassword('');
+      const user = mockUsers.find(u => u.email === email);
+      if (user && user.role === loginMode) {
+        setCurrentUser(user);
+        setEmail('');
+        setPassword('');
+        if (user.role === 'admin') {
+          setShowAdminPanel(true);
+        }
+      } else {
+        alert(`Invalid ${loginMode} credentials`);
+      }
     }
   };
 
   const handleSignOut = () => {
-    setIsSignedIn(false);
+    setCurrentUser(null);
+    setShowAdminPanel(false);
   };
+
+  const isSignedIn = currentUser !== null;
+  const isAdmin = currentUser?.role === 'admin';
+  const userCredits = currentUser?.credits || 0;
+  const currentUserId = currentUser?.id || '';
 
   const isToday = (date: Date): boolean => {
     const today = new Date();
-    return (
+  return (
       date.getDate() === today.getDate() &&
       date.getMonth() === today.getMonth() &&
       date.getFullYear() === today.getFullYear()
@@ -467,61 +719,90 @@ export default function Home() {
   };
 
   return (
-    <div className="min-h-screen bg-gray-100">
-      {/* Header */}
-      <header className="bg-white shadow-md px-6 py-4 flex justify-between items-center">
-        <h1 className="text-3xl font-bold text-[#0d47a1]">Blazing Paddles</h1>
-        <div className="flex gap-4">
-          <button className="px-4 py-2 bg-[#ffeb3b] text-black font-semibold rounded-lg hover:bg-yellow-400 transition-colors">
-            Book a Court
-          </button>
-          <button className="px-4 py-2 bg-[#1b5e20] text-white font-semibold rounded-lg hover:bg-green-700 transition-colors">
-            My Sessions
-          </button>
-        </div>
-      </header>
+    <div className="min-h-screen tech-grid relative">
+      {/* Golden hour gradient overlay - cinematic lighting */}
+      <div className="fixed inset-0 pointer-events-none opacity-40" style={{
+        background: 'radial-gradient(ellipse at top right, rgba(255, 199, 0, 0.12) 0%, transparent 50%), radial-gradient(ellipse at bottom left, rgba(224, 161, 0, 0.08) 0%, transparent 50%)'
+      }}></div>
+      
+      <div className="relative z-10">
+        {/* Header */}
+        <header className="premium-card border-b border-[#FFC700]/20 px-6 py-5 flex justify-between items-center backdrop-blur-xl">
+          <h1 className="text-4xl font-black tracking-tight text-[#FFC700] uppercase" style={{
+            textShadow: '0 0 20px rgba(255, 199, 0, 0.4), 0 2px 10px rgba(0, 0, 0, 0.9)'
+          }}>
+            Blazing Paddles
+          </h1>
+          <div className="flex gap-3">
+            <button 
+              onClick={() => {
+                if (isSignedIn) {
+                  setShowPrivateCourtModal(true);
+                } else {
+                  alert('Please sign in to book a private court');
+                }
+              }}
+              className="px-6 py-2.5 bg-[#FFC700] text-black font-black rounded-lg hover:bg-[#FFD400] transition-all shadow-lg hover:shadow-[#FFC700]/50 hover:scale-105 uppercase tracking-wide text-sm"
+              style={{
+                boxShadow: '0 4px 15px rgba(255, 199, 0, 0.5), 0 0 30px rgba(255, 199, 0, 0.2)'
+              }}
+            >
+              Book Private Court
+            </button>
+            <button className="px-6 py-2.5 bg-transparent border-2 border-[#FFC700]/50 text-[#FFC700] font-bold rounded-lg hover:bg-[#FFC700]/10 hover:border-[#FFC700] hover:text-[#FFD400] transition-all uppercase tracking-wide text-sm">
+              My Sessions
+            </button>
+          </div>
+        </header>
 
-      <div className="flex gap-6 p-6">
-        {/* Main Calendar Section */}
-        <div className="flex-1 bg-white rounded-lg shadow-lg p-6">
-          <div className="mb-6">
-            <h2 className="text-2xl font-bold text-gray-800 mb-2">Court / Bay Availability</h2>
+        <div className="flex gap-6 p-6">
+          {/* Main Calendar Section */}
+          <div className="flex-1 premium-card rounded-xl p-6 backdrop-blur-xl">
+            <div className="mb-6">
+              <h2 className="text-3xl font-black text-white mb-2 uppercase tracking-tight" style={{
+                textShadow: '0 2px 10px rgba(0, 0, 0, 0.8)'
+              }}>
+                Court / Bay Availability
+              </h2>
+            </div>
             
             {/* Filter System */}
-            <div className="mt-4 p-4 bg-gray-50 rounded-lg border border-gray-200">
+            <div className="mt-4 p-5 rounded-xl border border-[#FFC700]/20" style={{
+              background: 'linear-gradient(145deg, #1A1A1A 0%, #111111 100%)'
+            }}>
               <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
                 {/* View Mode Filter */}
                 <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-2">
+                  <label className="block text-sm font-semibold text-[#FFC700] mb-2 uppercase tracking-wide">
                     View Type
                   </label>
                   <div className="flex gap-2">
                     <button
                       onClick={() => setViewMode('courts')}
-                      className={`flex-1 px-3 py-2 rounded-lg text-sm font-semibold transition-colors ${
+                      className={`flex-1 px-3 py-2 rounded-lg text-sm font-bold transition-all uppercase tracking-wide ${
                         viewMode === 'courts'
-                          ? 'bg-[#0d47a1] text-white'
-                          : 'bg-white text-gray-700 border border-gray-300 hover:bg-gray-100'
+                          ? 'bg-[#FFC700] text-black shadow-lg shadow-[#FFC700]/50'
+                          : 'bg-[#1A1A1A] text-[#FFC700] border border-[#FFC700]/30 hover:border-[#FFC700] hover:bg-[#FFC700]/10 hover:text-[#FFD400]'
                       }`}
                     >
                       Courts
                     </button>
                     <button
                       onClick={() => setViewMode('bays')}
-                      className={`flex-1 px-3 py-2 rounded-lg text-sm font-semibold transition-colors ${
+                      className={`flex-1 px-3 py-2 rounded-lg text-sm font-bold transition-all uppercase tracking-wide ${
                         viewMode === 'bays'
-                          ? 'bg-[#0d47a1] text-white'
-                          : 'bg-white text-gray-700 border border-gray-300 hover:bg-gray-100'
+                          ? 'bg-[#FFC700] text-black shadow-lg shadow-[#FFC700]/50'
+                          : 'bg-[#1A1A1A] text-[#FFC700] border border-[#FFC700]/30 hover:border-[#FFC700] hover:bg-[#FFC700]/10 hover:text-[#FFD400]'
                       }`}
                     >
                       Bays
                     </button>
                     <button
                       onClick={() => setViewMode('both')}
-                      className={`flex-1 px-3 py-2 rounded-lg text-sm font-semibold transition-colors ${
+                      className={`flex-1 px-3 py-2 rounded-lg text-sm font-bold transition-all uppercase tracking-wide ${
                         viewMode === 'both'
-                          ? 'bg-[#0d47a1] text-white'
-                          : 'bg-white text-gray-700 border border-gray-300 hover:bg-gray-100'
+                          ? 'bg-[#FFC700] text-black shadow-lg shadow-[#FFC700]/50'
+                          : 'bg-[#1A1A1A] text-[#FFC700] border border-[#FFC700]/30 hover:border-[#FFC700] hover:bg-[#FFC700]/10 hover:text-[#FFD400]'
                       }`}
                     >
                       Both
@@ -531,7 +812,7 @@ export default function Home() {
 
                 {/* Date Search */}
                 <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-2">
+                  <label className="block text-sm font-semibold text-[#FFC700] mb-2 uppercase tracking-wide">
                     Search by Date
                   </label>
                   <input
@@ -541,72 +822,73 @@ export default function Home() {
                       setSearchDate(e.target.value);
                       handleDateSearch(e.target.value);
                     }}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#0d47a1]"
+                    className="w-full px-3 py-2 border border-[#FFC700]/30 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#FFC700] bg-[#1A1A1A] text-white"
                   />
                 </div>
 
-                {/* Week Search */}
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-2">
-                    Search by Week (YYYY-W##)
-                  </label>
-                  <input
-                    type="text"
-                    value={searchWeek}
-                    onChange={(e) => {
-                      setSearchWeek(e.target.value);
-                      if (e.target.value.match(/^\d{4}-W\d{1,2}$/)) {
-                        handleWeekSearch(e.target.value);
-                      }
-                    }}
-                    placeholder={`${currentYear}-W${currentWeekNumber}`}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#0d47a1]"
-                  />
-                </div>
+                {/* Court Level Filter - Only show for courts or both view */}
+                {(viewMode === 'courts' || viewMode === 'both') && (
+                  <div>
+                    <label className="block text-sm font-semibold text-[#FFC700] mb-2 uppercase tracking-wide">
+                      Filter by Level
+                    </label>
+                    <select
+                      value={selectedCourtLevel}
+                      onChange={(e) => setSelectedCourtLevel(e.target.value as 'beginner' | 'intermediate' | 'advanced' | 'challenge' | 'all')}
+                      className="w-full px-3 py-2 border border-[#FFC700]/30 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#FFC700] bg-[#1A1A1A] text-white"
+                    >
+                      <option value="all">All Levels</option>
+                      {COURT_TYPES.map((level) => (
+                        <option key={level} value={level}>
+                          {level.charAt(0).toUpperCase() + level.slice(1)}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                )}
               </div>
 
               {/* Week Navigation */}
-              <div className="flex items-center justify-between pt-4 border-t border-gray-200">
+              <div className="flex items-center justify-between pt-4 border-t border-[#FFC700]/20">
                 <button
                   onClick={() => navigateWeek('prev')}
-                  className="px-4 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 transition-colors font-semibold"
+                  className="px-4 py-2 bg-[#1A1A1A] text-[#FFC700] border border-[#FFC700]/30 rounded-lg hover:bg-[#FFC700]/10 hover:border-[#FFC700] hover:text-[#FFD400] transition-all font-bold uppercase tracking-wide text-sm"
                 >
                   ← Previous Week
                 </button>
                 <div className="text-center">
-                  <div className="text-sm text-gray-600">Week of</div>
-                  <div className="text-lg font-bold text-gray-800">
+                  <div className="text-sm text-[#B3B3B3] uppercase tracking-wide">Week of</div>
+                  <div className="text-lg font-black text-white uppercase tracking-tight">
                     {weekDates[0].toLocaleDateString('en-US', { month: 'short', day: 'numeric' })} - {weekDates[6].toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
                   </div>
-                  <div className="text-xs text-gray-500 mt-1">
+                  <div className="text-xs text-[#9A9A9A] mt-1">
                     Week {currentWeekNumber} of {currentYear}
                   </div>
                 </div>
                 <button
                   onClick={() => navigateWeek('next')}
-                  className="px-4 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 transition-colors font-semibold"
+                  className="px-4 py-2 bg-[#1A1A1A] text-[#FFC700] border border-[#FFC700]/30 rounded-lg hover:bg-[#FFC700]/10 hover:border-[#FFC700] hover:text-[#FFD400] transition-all font-bold uppercase tracking-wide text-sm"
                 >
                   Next Week →
                 </button>
               </div>
             </div>
-          </div>
 
           {/* Calendar Grid */}
           <div className="overflow-x-auto">
             <table className="w-full border-collapse">
               <thead>
                 <tr>
-                  <th className="p-2 text-left text-sm font-semibold text-gray-700">Time</th>
+                  <th className="p-3 text-left text-sm font-bold text-[#FFC700] uppercase tracking-wide">Time</th>
                   {weekDates.map((date, idx) => (
-                    <th key={idx} className="p-2 text-center border-l border-gray-300">
+                    <th key={idx} className="p-3 text-center border-l border-[#FFC700]/20">
                       <div className="flex flex-col items-center">
-                        <span className="text-xs font-semibold text-gray-600">{DAYS_OF_WEEK[idx]}</span>
+                        <span className="text-xs font-bold text-[#B3B3B3] uppercase tracking-wide">{DAYS_OF_WEEK[idx]}</span>
                         <span
-                          className={`text-lg font-bold mt-1 ${
+                          className={`text-lg font-black mt-1 ${
                             isToday(date)
-                              ? 'bg-[#0d47a1] text-white rounded-full w-8 h-8 flex items-center justify-center'
-                              : 'text-gray-800'
+                              ? 'bg-[#FFC700] text-black rounded-full w-10 h-10 flex items-center justify-center shadow-lg shadow-[#FFC700]/50'
+                              : 'text-white'
                           }`}
                         >
                           {getDateLabel(date)}
@@ -624,9 +906,9 @@ export default function Home() {
                   const isBayView = viewMode === 'bays';
                   
                   return (
-                    <tr key={slotIdx} className="border-t border-gray-200">
+                    <tr key={slotIdx} className="border-t border-[#FFC700]/10">
                       <td 
-                        className="p-3 text-sm font-medium text-gray-700 bg-gray-50 cursor-pointer hover:bg-gray-100 transition-colors"
+                        className="p-3 text-sm font-bold text-[#FFC700] bg-[#1A1A1A] cursor-pointer hover:bg-[#FFC700]/10 transition-all uppercase"
                         onClick={() => {
                           // Default to first day of week when clicking time slot
                           handleTimeSlotClick(weekDates[0], slot.hour);
@@ -635,23 +917,31 @@ export default function Home() {
                       >
                         {slot.label}
                         {viewMode === 'both' && !isValidCourtTime && (
-                          <span className="block text-xs text-gray-500 mt-0.5">(Bay only)</span>
+                          <span className="block text-xs text-[#9A9A9A] mt-0.5 normal-case">(Bay only)</span>
                         )}
                       </td>
                       {weekDates.map((date, dateIdx) => {
                         // For courts view, only show data for valid 2-hour interval times
                         if (isCourtView && !isValidCourtTime) {
                           return (
-                            <td key={dateIdx} className="p-1 border-l border-gray-200 relative">
-                              <div className="h-16 rounded bg-gray-100 border border-gray-200 flex items-center justify-center">
-                                <span className="text-xs text-gray-400">—</span>
+                            <td key={dateIdx} className="p-1 border-l border-[#FFC700]/10 relative">
+                              <div className="h-16 rounded bg-[#0B0B0B] border border-[#FFC700]/10 flex items-center justify-center">
+                                <span className="text-xs text-[#9A9A9A]/30">—</span>
                               </div>
                             </td>
                           );
                         }
                         
+                        const dateStr = formatDate(date);
+                        
+                        // Check for calendar blocks
+                        const block = calendarBlocks.find(b => b.date === dateStr && slot.hour >= b.startHour && slot.hour < b.endHour);
+                        
+                        // Check for group training events
+                        const groupEvent = groupTrainingEvents.find(e => e.date === dateStr && slot.hour === e.hour);
+                        
                         const totalSignups = (isCourtView || viewMode === 'both') && isValidCourtTime
-                          ? getTotalSignups(date, slot.hour) 
+                          ? getSignupsForSelectedLevel(date, slot.hour) 
                           : 0;
                         const bayReservations = isBayView || viewMode === 'both'
                           ? getBayReservationCount(date, slot.hour)
@@ -666,15 +956,30 @@ export default function Home() {
                         const isCourtBlocked = (isCourtView || viewMode === 'both') && isValidCourtTime
                           ? !isCourtTimeSlotAvailable(date, slot.hour) && !userSignedUp
                           : false;
+                        const isUserInGroupEvent = groupEvent && currentUser && groupEvent.participants.includes(currentUser.id);
                         
                         return (
                           <td
                             key={dateIdx}
-                            className="p-1 border-l border-gray-200 relative"
+                            className="p-1 border-l border-[#FFC700]/10 relative"
                           >
                             <div
                               onClick={() => {
-                                if (!isCourtBlocked) {
+                                if (block) {
+                                  // Show block info
+                                  alert(`Blocked: ${block.reason}`);
+                                } else if (groupEvent) {
+                                  // Show group event info or join
+                                  if (isSignedIn && !isAdmin) {
+                                    if (isUserInGroupEvent) {
+                                      alert(`You're already registered for: ${groupEvent.title}`);
+                                    } else {
+                                      handleJoinGroupEvent(groupEvent.id);
+                                    }
+                                  } else {
+                                    alert(`Group Event: ${groupEvent.title}\n${groupEvent.participants.length}/${groupEvent.maxParticipants} participants\n${groupEvent.creditsRequired} credits`);
+                                  }
+                                } else if (!isCourtBlocked) {
                                   handleTimeSlotClick(date, slot.hour);
                                 }
                               }}
@@ -682,42 +987,68 @@ export default function Home() {
                                 h-16 rounded transition-all text-xs
                                 flex flex-col items-center justify-center
                                 ${
-                                  isCourtBlocked
-                                    ? 'bg-red-100 border border-red-300 cursor-not-allowed opacity-60'
+                                  block
+                                    ? 'bg-[#0B0B0B] border-2 border-[#ff4444]/50 cursor-pointer opacity-80'
+                                    : groupEvent
+                                    ? isUserInGroupEvent
+                                    ? 'bg-[#FFC700] border-2 border-[#FFC700] hover:bg-[#FFD400] cursor-pointer text-black shadow-lg shadow-[#FFC700]/40'
+                                    : 'bg-[#2E6B57] hover:bg-[#3A7F67] border border-[#2E6B57] cursor-pointer hover:border-[#3A7F67]'
+                                    : isCourtBlocked
+                                    ? 'bg-[#0B0B0B] border border-[#ff4444]/30 cursor-not-allowed opacity-40'
                                     : userSignedUp || userHasBay
-                                    ? 'bg-[#ffeb3b] border-2 border-[#0d47a1] hover:bg-yellow-200 cursor-pointer'
+                                    ? 'bg-[#FFC700] border-2 border-[#FFC700] hover:bg-[#FFD400] cursor-pointer text-black shadow-lg shadow-[#FFC700]/40'
                                     : hasSignups
                                     ? isBayView
-                                    ? 'bg-blue-100 hover:bg-blue-200 border border-blue-300 cursor-pointer'
-                                    : 'bg-green-100 hover:bg-green-200 border border-green-300 cursor-pointer'
-                                    : 'bg-gray-50 hover:bg-gray-100 border border-gray-200 cursor-pointer'
+                                    ? 'bg-[#1A1A1A] hover:bg-[#222222] border border-[#FFC700]/30 cursor-pointer hover:border-[#FFC700] hover:shadow-[#FFC700]/20'
+                                    : 'bg-[#111111] hover:bg-[#1A1A1A] border border-[#FFC700]/30 cursor-pointer hover:border-[#FFC700] hover:shadow-[#FFC700]/20'
+                                    : 'bg-[#0B0B0B] hover:bg-[#111111] border border-[#FFC700]/10 cursor-pointer hover:border-[#FFC700]/30'
                                 }
                               `}
                               title={
-                                isCourtBlocked
+                                block
+                                  ? `${slot.label} - ${formatDate(date)} - Blocked: ${block.reason}`
+                                  : groupEvent
+                                  ? `${slot.label} - ${formatDate(date)} - Group Event: ${groupEvent.title} (${groupEvent.participants.length}/${groupEvent.maxParticipants})`
+                                  : isCourtBlocked
                                   ? `${slot.label} - ${formatDate(date)} - Blocked (2-hour booking)`
                                   : `${slot.label} - ${formatDate(date)} - Click to ${isBayView ? 'book a bay' : 'view courts'}`
                               }
                             >
-                              {isCourtBlocked ? (
-                                <span className="text-xs font-semibold text-red-700">Blocked</span>
+                              {block ? (
+                                <span className="text-xs font-bold text-[#ff4444] text-center px-1">BLOCKED</span>
+                              ) : groupEvent ? (
+                                <>
+                                  <span className="text-xs font-black text-white uppercase tracking-wide text-center px-1">
+                                    {groupEvent.title}
+                                  </span>
+                                  <span className="text-xs text-white/80 mt-0.5">
+                                    {groupEvent.participants.length}/{groupEvent.maxParticipants} • {groupEvent.creditsRequired} credits
+                                  </span>
+                                  {isUserInGroupEvent && (
+                                    <span className="text-xs font-black text-black mt-0.5 uppercase">You're in!</span>
+                                  )}
+                                </>
+                              ) : isCourtBlocked ? (
+                                <span className="text-xs font-bold text-[#ff4444]">Blocked</span>
                               ) : hasSignups ? (
-                                <span className="text-xs font-semibold text-gray-700">
+                                <span className="text-xs font-bold text-[#FFC700]">
                                   {viewMode === 'both' 
-                                    ? `${totalSignups} court${totalSignups !== 1 ? 's' : ''}, ${bayReservations} bay${bayReservations !== 1 ? 's' : ''}`
+                                    ? `${totalSignups} ${selectedCourtLevel !== 'all' ? selectedCourtLevel : 'court'}${totalSignups !== 1 ? 's' : ''}, ${bayReservations} bay${bayReservations !== 1 ? 's' : ''}`
                                     : isBayView
                                     ? `${bayReservations} bay${bayReservations !== 1 ? 's' : ''}`
+                                    : selectedCourtLevel !== 'all'
+                                    ? `${totalSignups} ${selectedCourtLevel}`
                                     : `${totalSignups} signed up`
                                   }
                                 </span>
                               ) : null}
-                              {(userSignedUp || userHasBay) && !isCourtBlocked && (
-                                <span className="text-xs font-bold text-[#0d47a1] mt-1">
+                              {(userSignedUp || userHasBay) && !isCourtBlocked && !block && !groupEvent && (
+                                <span className="text-xs font-black text-black mt-1 uppercase tracking-wide">
                                   You're in!
                                 </span>
                               )}
-                              {!hasSignups && !userSignedUp && !userHasBay && !isCourtBlocked && (
-                                <span className="text-xs text-gray-500">Available</span>
+                              {!hasSignups && !userSignedUp && !userHasBay && !isCourtBlocked && !block && !groupEvent && (
+                                <span className="text-xs text-[#9A9A9A]">Available</span>
                               )}
                             </div>
                           </td>
@@ -730,132 +1061,190 @@ export default function Home() {
             </table>
           </div>
 
-          <p className="mt-6 text-sm text-gray-600 text-center">
+          <p className="mt-6 text-sm text-[#B3B3B3] text-center uppercase tracking-wide">
             Click on any time slot to see available courts and sign up.
           </p>
         </div>
 
         {/* Right Side Panel - Sign In / Booking */}
-        <div className="w-80 bg-white rounded-lg shadow-lg p-6">
+        <div className="w-80 premium-card rounded-xl p-6 backdrop-blur-xl">
           {!isSignedIn ? (
             <div>
-              <h3 className="text-xl font-bold text-gray-800 mb-4">Sign In</h3>
+              <h3 className="text-2xl font-black text-[#FFC700] mb-4 uppercase tracking-tight">Sign In</h3>
+              
+              {/* Login Mode Toggle */}
+              <div className="mb-4 flex gap-2">
+                <button
+                  onClick={() => setLoginMode('member')}
+                  className={`flex-1 px-3 py-2 rounded-lg text-sm font-bold transition-all uppercase tracking-wide ${
+                    loginMode === 'member'
+                      ? 'bg-[#FFC700] text-black shadow-lg shadow-[#FFC700]/50'
+                      : 'bg-[#1A1A1A] text-[#FFC700] border border-[#FFC700]/30 hover:border-[#FFC700] hover:bg-[#FFC700]/10'
+                  }`}
+                >
+                  Member
+                </button>
+                <button
+                  onClick={() => setLoginMode('admin')}
+                  className={`flex-1 px-3 py-2 rounded-lg text-sm font-bold transition-all uppercase tracking-wide ${
+                    loginMode === 'admin'
+                      ? 'bg-[#FFC700] text-black shadow-lg shadow-[#FFC700]/50'
+                      : 'bg-[#1A1A1A] text-[#FFC700] border border-[#FFC700]/30 hover:border-[#FFC700] hover:bg-[#FFC700]/10'
+                  }`}
+                >
+                  Admin
+                </button>
+              </div>
+
               <form onSubmit={handleSignIn} className="space-y-4">
                 <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                  <label className="block text-sm font-semibold text-[#FFC700] mb-1 uppercase tracking-wide">
                     Email
                   </label>
                   <input
                     type="email"
                     value={email}
                     onChange={(e) => setEmail(e.target.value)}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#0d47a1]"
-                    placeholder="your@email.com"
+                    className="w-full px-3 py-2 border border-[#FFC700]/30 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#FFC700] bg-[#1A1A1A] text-white placeholder:text-[#9A9A9A]"
+                    placeholder={loginMode === 'admin' ? 'admin@blazingpaddles.com' : 'member@example.com'}
                     required
                   />
                 </div>
                 <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                  <label className="block text-sm font-semibold text-[#FFC700] mb-1 uppercase tracking-wide">
                     Password
                   </label>
                   <input
                     type="password"
                     value={password}
                     onChange={(e) => setPassword(e.target.value)}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#0d47a1]"
+                    className="w-full px-3 py-2 border border-[#FFC700]/30 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#FFC700] bg-[#1A1A1A] text-white placeholder:text-[#9A9A9A]"
                     placeholder="••••••••"
                     required
                   />
                 </div>
                 <button
                   type="submit"
-                  className="w-full py-2 bg-[#0d47a1] text-white font-semibold rounded-lg hover:bg-blue-700 transition-colors"
+                  className="w-full py-2.5 bg-[#FFC700] text-black font-black rounded-lg hover:bg-[#FFD400] transition-all shadow-lg shadow-[#FFC700]/50 uppercase tracking-wide"
                 >
-                  Sign In
+                  Sign In as {loginMode === 'admin' ? 'Admin' : 'Member'}
                 </button>
               </form>
               <div className="mt-4 text-center">
-                <a href="#" className="text-sm text-[#0d47a1] hover:underline">
+                <a href="#" className="text-sm text-[#FFC700] hover:text-[#FFD400] hover:underline">
                   Don't have an account? Sign up
-                </a>
-              </div>
-            </div>
+          </a>
+        </div>
+    </div>
           ) : (
             <div>
               <div className="flex justify-between items-center mb-4">
-                <h3 className="text-xl font-bold text-gray-800">Welcome!</h3>
+                <h3 className="text-2xl font-black text-[#FFC700] uppercase tracking-tight">Welcome!</h3>
                 <button
                   onClick={handleSignOut}
-                  className="text-sm text-gray-600 hover:text-gray-800"
+                  className="text-sm text-[#B3B3B3] hover:text-[#FFC700] uppercase tracking-wide font-semibold"
                 >
                   Sign Out
                 </button>
               </div>
-              <div className="bg-[#ffeb3b] rounded-lg p-4 mb-4">
-                <div className="text-sm text-gray-700 mb-1">Available Credits</div>
-                <div className="text-3xl font-bold text-gray-900">{userCredits}</div>
+              <div className="rounded-lg p-4 mb-4 border-2 border-[#FFC700]" style={{
+                background: 'linear-gradient(135deg, rgba(255, 199, 0, 0.2) 0%, rgba(255, 212, 0, 0.15) 100%)'
+              }}>
+                <div className="text-sm text-[#FFC700]/90 mb-1 uppercase tracking-wide font-semibold">Available Credits</div>
+                <div className="text-4xl font-black text-[#FFC700]">{userCredits}</div>
               </div>
               <div className="space-y-3">
-                <button
-                  onClick={() => setShowBookingModal(true)}
-                  className="w-full py-3 bg-[#1b5e20] text-white font-semibold rounded-lg hover:bg-green-700 transition-colors"
-                >
-                  Book a Court
-                </button>
-                <button className="w-full py-3 bg-gray-200 text-gray-800 font-semibold rounded-lg hover:bg-gray-300 transition-colors">
-                  My Sessions
-                </button>
-                <button className="w-full py-3 bg-gray-200 text-gray-800 font-semibold rounded-lg hover:bg-gray-300 transition-colors">
-                  Purchase Credits
-                </button>
+                {isAdmin ? (
+                  <>
+                    <button
+                      onClick={() => setShowAdminPanel(true)}
+                      className="w-full py-3 bg-[#FFC700] text-black font-black rounded-lg hover:bg-[#FFD400] transition-all shadow-lg shadow-[#FFC700]/50 uppercase tracking-wide"
+                    >
+                      Admin Panel
+                    </button>
+                    <button
+                      onClick={() => setShowBlockModal(true)}
+                      className="w-full py-3 bg-transparent border-2 border-[#FFC700]/50 text-[#FFC700] font-bold rounded-lg hover:bg-[#FFC700]/10 hover:border-[#FFC700] hover:text-[#FFD400] transition-all uppercase tracking-wide"
+                    >
+                      Create Block
+                    </button>
+                    <button
+                      onClick={() => setShowGroupEventModal(true)}
+                      className="w-full py-3 bg-transparent border-2 border-[#FFC700]/50 text-[#FFC700] font-bold rounded-lg hover:bg-[#FFC700]/10 hover:border-[#FFC700] hover:text-[#FFD400] transition-all uppercase tracking-wide"
+                    >
+                      Create Group Event
+                    </button>
+                  </>
+                ) : (
+                  <>
+                    <button
+                      onClick={() => setShowPrivateCourtModal(true)}
+                      className="w-full py-3 bg-[#FFC700] text-black font-black rounded-lg hover:bg-[#FFD400] transition-all shadow-lg shadow-[#FFC700]/50 uppercase tracking-wide"
+                    >
+                      Book Private Court
+                    </button>
+                    <button className="w-full py-3 bg-transparent border-2 border-[#FFC700]/50 text-[#FFC700] font-bold rounded-lg hover:bg-[#FFC700]/10 hover:border-[#FFC700] hover:text-[#FFD400] transition-all uppercase tracking-wide">
+                      My Sessions
+                    </button>
+                    <button className="w-full py-3 bg-transparent border-2 border-[#FFC700]/50 text-[#FFC700] font-bold rounded-lg hover:bg-[#FFC700]/10 hover:border-[#FFC700] hover:text-[#FFD400] transition-all uppercase tracking-wide">
+                      Purchase Credits
+                    </button>
+                  </>
+                )}
               </div>
             </div>
           )}
         </div>
-      </div>
+        </div>
 
       {/* Booking Modal */}
       {showBookingModal && selectedTimeSlot && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-          <div className="bg-white rounded-lg p-6 max-w-lg w-full mx-4 max-h-[90vh] overflow-y-auto">
+        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center z-50">
+          <div className="premium-card rounded-xl p-6 max-w-lg w-full mx-4 max-h-[90vh] overflow-y-auto">
             <div className="flex justify-between items-center mb-4">
-              <h3 className="text-xl font-bold text-gray-800">Available Courts</h3>
+              <h3 className="text-2xl font-black text-[#FFC700] uppercase tracking-tight">Available Courts</h3>
               <button
                 onClick={() => {
                   setShowBookingModal(false);
                   setSelectedTimeSlot(null);
                 }}
-                className="text-gray-500 hover:text-gray-700 text-2xl leading-none"
+                className="text-[#B3B3B3] hover:text-[#FFC700] text-2xl leading-none font-bold transition-colors"
               >
                 ×
               </button>
             </div>
             
-            <div className="mb-4 p-3 bg-gray-50 rounded-lg">
-              <p className="text-sm text-gray-600">
-                <strong>Date:</strong> {new Date(selectedTimeSlot.date).toLocaleDateString('en-US', { 
+            <div className="mb-4 p-4 rounded-lg border border-[#FFC700]/20" style={{
+              background: 'linear-gradient(145deg, #1A1A1A 0%, #111111 100%)'
+            }}>
+              <p className="text-sm text-[#B3B3B3]">
+                <strong className="text-[#FFC700]">Date:</strong> {new Date(selectedTimeSlot.date).toLocaleDateString('en-US', { 
                   weekday: 'long', 
                   year: 'numeric', 
                   month: 'long', 
                   day: 'numeric' 
                 })}
               </p>
-              <p className="text-sm text-gray-600">
-                <strong>Time:</strong> {getTimeLabel(selectedTimeSlot.hour)} - {getTimeLabel(selectedTimeSlot.hour + COURT_BOOKING_DURATION_HOURS)} ({COURT_BOOKING_DURATION_HOURS} hours)
+              <p className="text-sm text-[#B3B3B3]">
+                <strong className="text-[#FFC700]">Time:</strong> {getTimeLabel(selectedTimeSlot.hour)} - {getTimeLabel(selectedTimeSlot.hour + COURT_BOOKING_DURATION_HOURS)} ({COURT_BOOKING_DURATION_HOURS} hours)
               </p>
-              <p className="text-sm text-gray-600 mt-2">
-                <strong>Your Credits:</strong> {userCredits} | <strong>Required:</strong> 1 per court
+              <p className="text-sm text-[#B3B3B3] mt-2">
+                <strong className="text-[#FFC700]">Your Credits:</strong> {userCredits} | <strong className="text-[#FFC700]">Required:</strong> 1 per court
               </p>
             </div>
 
             {!isCourtTimeSlotAvailable(new Date(selectedTimeSlot.date), selectedTimeSlot.hour) ? (
-              <div className="p-4 bg-red-100 border border-red-300 rounded-lg mb-4">
-                <p className="font-semibold text-red-800">This time slot is not available for new bookings.</p>
-                <p className="text-sm text-red-700 mt-1">It may be blocked by an existing 2-hour court booking.</p>
+              <div className="p-4 border border-[#ff4444]/30 rounded-lg mb-4" style={{
+                background: 'linear-gradient(145deg, #0B0B0B 0%, #111111 100%)'
+              }}>
+                <p className="font-bold text-[#ff4444]">This time slot is not available for new bookings.</p>
+                <p className="text-sm text-[#ff4444]/70 mt-1">It may be blocked by an existing 2-hour court booking.</p>
               </div>
             ) : isUserSignedUp(new Date(selectedTimeSlot.date), selectedTimeSlot.hour) ? (
-              <div className="p-4 bg-[#ffeb3b] rounded-lg mb-4">
-                <p className="font-semibold text-gray-800">You're already signed up for this time slot!</p>
+              <div className="p-4 border-2 border-[#FFC700] rounded-lg mb-4" style={{
+                background: 'linear-gradient(135deg, rgba(255, 199, 0, 0.2) 0%, rgba(255, 212, 0, 0.15) 100%)'
+              }}>
+                <p className="font-black text-[#FFC700] uppercase">You're already signed up for this time slot!</p>
               </div>
             ) : (
               <div className="space-y-3 mb-4">
@@ -875,12 +1264,19 @@ export default function Home() {
                         p-4 rounded-lg border-2 transition-all
                         ${
                           isFull
-                            ? 'bg-gray-100 border-gray-300 opacity-60'
+                            ? 'border-[#ff4444]/30 opacity-40 cursor-not-allowed'
                             : userInThisCourt
-                            ? 'bg-[#ffeb3b] border-[#0d47a1]'
-                            : 'bg-white border-gray-300 hover:border-[#0d47a1] hover:shadow-md cursor-pointer'
+                            ? 'border-[#FFD700] bg-[#FFD700]/10'
+                            : 'border-[#FFD700]/30 hover:border-[#FFD700] hover:shadow-lg hover:shadow-[#FFD700]/20 cursor-pointer'
                         }
                       `}
+                      style={{
+                        background: isFull 
+                          ? 'linear-gradient(145deg, #0B0B0B 0%, #111111 100%)'
+                          : userInThisCourt
+                          ? 'linear-gradient(135deg, rgba(255, 199, 0, 0.15) 0%, rgba(255, 212, 0, 0.1) 100%)'
+                          : 'linear-gradient(145deg, #1A1A1A 0%, #111111 100%)'
+                      }}
                       onClick={() => {
                         if (!isFull && !userInThisCourt && userCredits >= 1) {
                           handleBooking(courtType);
@@ -889,40 +1285,40 @@ export default function Home() {
                     >
                       <div className="flex justify-between items-center">
                         <div className="flex-1">
-                          <h4 className="font-bold text-lg text-gray-800 capitalize mb-1">
+                          <h4 className="font-black text-lg text-[#FFC700] capitalize mb-1 uppercase tracking-wide">
                             {courtType}
                           </h4>
                           <div className="flex items-center gap-2">
-                            <div className="flex-1 bg-gray-200 rounded-full h-2">
+                            <div className="flex-1 bg-[#0B0B0B] rounded-full h-2 border border-[#FFC700]/20">
                               <div
                                 className={`h-2 rounded-full transition-all ${
                                   isFull
-                                    ? 'bg-red-500'
+                                    ? 'bg-[#ff4444]'
                                     : count > MAX_PARTICIPANTS * 0.75
-                                    ? 'bg-yellow-500'
-                                    : 'bg-green-500'
+                                    ? 'bg-[#FFB000]'
+                                    : 'bg-[#FFC700]'
                                 }`}
                                 style={{ width: `${(count / MAX_PARTICIPANTS) * 100}%` }}
                               />
                             </div>
-                            <span className="text-sm font-semibold text-gray-700 min-w-[50px] text-right">
+                            <span className="text-sm font-bold text-[#FFC700] min-w-[50px] text-right">
                               {count}/{MAX_PARTICIPANTS}
                             </span>
                           </div>
                         </div>
                         <div className="ml-4">
                           {isFull ? (
-                            <span className="px-3 py-1 bg-red-100 text-red-700 rounded-lg text-sm font-semibold">
+                            <span className="px-3 py-1 border border-[#ff4444]/50 text-[#ff4444] rounded-lg text-sm font-bold uppercase">
                               Full
                             </span>
                           ) : userInThisCourt ? (
-                            <span className="px-3 py-1 bg-[#0d47a1] text-white rounded-lg text-sm font-semibold">
+                            <span className="px-3 py-1 bg-[#FFC700] text-black rounded-lg text-sm font-black uppercase">
                               You're In
                             </span>
                           ) : (
                             <button
                               disabled={userCredits < 1}
-                              className="px-4 py-2 bg-[#1b5e20] text-white rounded-lg text-sm font-semibold hover:bg-green-700 transition-colors disabled:bg-gray-300 disabled:cursor-not-allowed"
+                              className="px-4 py-2 bg-[#FFC700] text-black rounded-lg text-sm font-black hover:bg-[#FFD400] transition-all disabled:bg-[#1A1A1A] disabled:text-[#9A9A9A] disabled:cursor-not-allowed uppercase"
                             >
                               Join
                             </button>
@@ -940,7 +1336,7 @@ export default function Home() {
                 setShowBookingModal(false);
                 setSelectedTimeSlot(null);
               }}
-              className="w-full py-2 bg-gray-200 text-gray-800 font-semibold rounded-lg hover:bg-gray-300 transition-colors"
+              className="w-full py-2 bg-transparent border-2 border-[#FFC700]/50 text-[#FFC700] font-bold rounded-lg hover:bg-[#FFC700]/10 hover:border-[#FFC700] transition-all uppercase tracking-wide"
             >
               Close
             </button>
@@ -950,48 +1346,52 @@ export default function Home() {
 
       {/* Bay Booking Modal */}
       {showBayBookingModal && selectedTimeSlot && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-          <div className="bg-white rounded-lg p-6 max-w-lg w-full mx-4 max-h-[90vh] overflow-y-auto">
+        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center z-50">
+          <div className="premium-card rounded-xl p-6 max-w-lg w-full mx-4 max-h-[90vh] overflow-y-auto">
             <div className="flex justify-between items-center mb-4">
-              <h3 className="text-xl font-bold text-gray-800">Book a Bay</h3>
+              <h3 className="text-2xl font-black text-[#FFC700] uppercase tracking-tight">Book a Bay</h3>
               <button
                 onClick={() => {
                   setShowBayBookingModal(false);
                   setSelectedTimeSlot(null);
                   setSelectedBayDuration(null);
                 }}
-                className="text-gray-500 hover:text-gray-700 text-2xl leading-none"
+                className="text-[#B3B3B3] hover:text-[#FFC700] text-2xl leading-none font-bold transition-colors"
               >
                 ×
               </button>
             </div>
             
-            <div className="mb-4 p-3 bg-gray-50 rounded-lg">
-              <p className="text-sm text-gray-600">
-                <strong>Date:</strong> {new Date(selectedTimeSlot.date).toLocaleDateString('en-US', { 
+            <div className="mb-4 p-4 rounded-lg border border-[#FFC700]/20" style={{
+              background: 'linear-gradient(145deg, #1A1A1A 0%, #111111 100%)'
+            }}>
+              <p className="text-sm text-[#B3B3B3]">
+                <strong className="text-[#FFC700]">Date:</strong> {new Date(selectedTimeSlot.date).toLocaleDateString('en-US', { 
                   weekday: 'long', 
                   year: 'numeric', 
                   month: 'long', 
                   day: 'numeric' 
                 })}
               </p>
-              <p className="text-sm text-gray-600">
-                <strong>Start Time:</strong> {getTimeLabel(selectedTimeSlot.hour)}
+              <p className="text-sm text-[#B3B3B3]">
+                <strong className="text-[#FFC700]">Start Time:</strong> {getTimeLabel(selectedTimeSlot.hour)}
               </p>
-              <p className="text-sm text-gray-600 mt-2">
-                <strong>Your Credits:</strong> {userCredits} | <strong>Required:</strong> 1 per booking
+              <p className="text-sm text-[#B3B3B3] mt-2">
+                <strong className="text-[#FFC700]">Your Credits:</strong> {userCredits} | <strong className="text-[#FFC700]">Required:</strong> 1 per booking
               </p>
             </div>
 
             {hasUserBayReservation(new Date(selectedTimeSlot.date), selectedTimeSlot.hour) ? (
-              <div className="p-4 bg-[#ffeb3b] rounded-lg mb-4">
-                <p className="font-semibold text-gray-800">You already have a bay reservation for this time slot!</p>
+              <div className="p-4 border-2 border-[#FFC700] rounded-lg mb-4" style={{
+                background: 'linear-gradient(135deg, rgba(255, 199, 0, 0.2) 0%, rgba(255, 212, 0, 0.15) 100%)'
+              }}>
+                <p className="font-black text-[#FFC700] uppercase">You already have a bay reservation for this time slot!</p>
               </div>
             ) : (
               <div className="space-y-4">
                 {!selectedBayDuration ? (
                   <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-3">
+                    <label className="block text-sm font-semibold text-[#FFC700] mb-3 uppercase tracking-wide">
                       Select Duration
                     </label>
                     <div className="grid grid-cols-2 gap-3">
@@ -1019,21 +1419,21 @@ export default function Home() {
                             disabled={!hasAvailability}
                             className={`p-4 border-2 rounded-lg transition-all text-left ${
                               hasAvailability
-                                ? 'border-gray-300 hover:border-[#0d47a1] hover:bg-blue-50 cursor-pointer'
-                                : 'border-gray-200 bg-gray-100 opacity-60 cursor-not-allowed'
+                                ? 'border-[#FFC700]/30 bg-[#1A1A1A] hover:border-[#FFC700] hover:bg-[#FFC700]/10 cursor-pointer'
+                                : 'border-[#FFC700]/10 bg-[#0B0B0B] opacity-40 cursor-not-allowed'
                             }`}
                           >
-                            <div className="font-bold text-lg text-gray-800">{duration} min</div>
-                            <div className="text-xs text-gray-600 mt-1">
+                            <div className="font-black text-lg text-[#FFC700]">{duration} min</div>
+                            <div className="text-xs text-[#B3B3B3] mt-1">
                               Ends at {endTimeLabel}
                             </div>
                             {hasAvailability && (
-                              <div className="text-xs text-green-600 mt-1 font-semibold">
+                              <div className="text-xs text-[#FFC700] mt-1 font-bold">
                                 {availableBays.length} bay{availableBays.length !== 1 ? 's' : ''} available
                               </div>
                             )}
                             {!hasAvailability && (
-                              <div className="text-xs text-red-600 mt-1">Unavailable</div>
+                              <div className="text-xs text-[#ff4444] mt-1">Unavailable</div>
                             )}
                           </button>
                         );
@@ -1044,11 +1444,11 @@ export default function Home() {
                   <div>
                     <button
                       onClick={() => setSelectedBayDuration(null)}
-                      className="mb-4 text-sm text-[#0d47a1] hover:underline flex items-center gap-1"
+                      className="mb-4 text-sm text-[#FFC700] hover:text-[#FFD400] hover:underline flex items-center gap-1 font-semibold"
                     >
                       ← Back to duration selection
                     </button>
-                    <label className="block text-sm font-medium text-gray-700 mb-3">
+                    <label className="block text-sm font-semibold text-[#FFC700] mb-3 uppercase tracking-wide">
                       Select Bay ({selectedBayDuration} minutes)
                     </label>
                     <div className="space-y-2">
@@ -1073,8 +1473,8 @@ export default function Home() {
                             key={bayNumber}
                             className={`p-4 rounded-lg border-2 transition-all ${
                               isAvailable
-                                ? 'border-gray-300 bg-white hover:border-[#0d47a1] hover:bg-blue-50 cursor-pointer'
-                                : 'border-gray-200 bg-gray-100 opacity-60'
+                                ? 'border-[#FFC700]/30 bg-[#1A1A1A] hover:border-[#FFC700] hover:bg-[#FFC700]/10 cursor-pointer'
+                                : 'border-[#FFC700]/10 bg-[#0B0B0B] opacity-40'
                             }`}
                             onClick={() => {
                               if (isAvailable && userCredits >= 1) {
@@ -1084,8 +1484,8 @@ export default function Home() {
                           >
                             <div className="flex justify-between items-center">
                               <div>
-                                <div className="font-semibold text-lg text-gray-800">{bay}</div>
-                                <div className="text-xs text-gray-600 mt-1">
+                                <div className="font-black text-lg text-[#FFC700]">{bay}</div>
+                                <div className="text-xs text-[#B3B3B3] mt-1">
                                   {timeSlots.find(s => s.hour === selectedTimeSlot.hour)?.label} - {endTimeLabel}
                                 </div>
                               </div>
@@ -1093,12 +1493,12 @@ export default function Home() {
                                 {isAvailable ? (
                                   <button
                                     disabled={userCredits < 1}
-                                    className="px-4 py-2 bg-[#1b5e20] text-white rounded-lg text-sm font-semibold hover:bg-green-700 transition-colors disabled:bg-gray-300 disabled:cursor-not-allowed"
+                                    className="px-4 py-2 bg-[#FFC700] text-black rounded-lg text-sm font-black hover:bg-[#FFD400] transition-all disabled:bg-[#1A1A1A] disabled:text-[#9A9A9A] disabled:cursor-not-allowed uppercase"
                                   >
                                     Book
                                   </button>
                                 ) : (
-                                  <span className="px-3 py-1 bg-red-100 text-red-700 rounded-lg text-sm font-semibold">
+                                  <span className="px-3 py-1 border border-[#ff4444]/50 text-[#ff4444] rounded-lg text-sm font-bold uppercase">
                                     Unavailable
                                   </span>
                                 )}
@@ -1119,7 +1519,7 @@ export default function Home() {
                 setSelectedTimeSlot(null);
                 setSelectedBayDuration(null);
               }}
-              className="w-full mt-4 py-2 bg-gray-200 text-gray-800 font-semibold rounded-lg hover:bg-gray-300 transition-colors"
+              className="w-full mt-4 py-2 bg-transparent border-2 border-[#FFC700]/50 text-[#FFC700] font-bold rounded-lg hover:bg-[#FFC700]/10 hover:border-[#FFC700] transition-all uppercase tracking-wide"
             >
               Close
             </button>
@@ -1127,10 +1527,521 @@ export default function Home() {
         </div>
       )}
 
+      {/* Private Court Booking Modal */}
+      {showPrivateCourtModal && (
+        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center z-50">
+          <div className="premium-card rounded-xl p-6 max-w-2xl w-full mx-4 max-h-[90vh] overflow-y-auto">
+            <div className="flex justify-between items-center mb-4">
+              <h3 className="text-2xl font-black text-[#FFC700] uppercase tracking-tight">Book a Private Court</h3>
+              <button
+                onClick={() => {
+                  setShowPrivateCourtModal(false);
+                  setSelectedPrivateCourtDate('');
+                }}
+                className="text-[#B3B3B3] hover:text-[#FFC700] text-2xl leading-none font-bold transition-colors"
+              >
+                ×
+              </button>
+            </div>
+            
+            <div className="mb-4 p-4 rounded-lg border border-[#FFC700]/20" style={{
+              background: 'linear-gradient(145deg, #1A1A1A 0%, #111111 100%)'
+            }}>
+              <p className="text-sm text-[#B3B3B3]">
+                <strong className="text-[#FFC700]">Private Court Booking:</strong> 2 hours | <strong className="text-[#FFC700]">Credits Required:</strong> 4
+              </p>
+              <p className="text-sm text-[#B3B3B3] mt-1">
+                <strong className="text-[#FFC700]">Your Credits:</strong> {userCredits}
+              </p>
+            </div>
+
+            {userCredits < 4 ? (
+              <div className="p-4 border border-[#ff4444]/30 rounded-lg mb-4" style={{
+                background: 'linear-gradient(145deg, #0B0B0B 0%, #111111 100%)'
+              }}>
+                <p className="font-bold text-[#ff4444] uppercase">Insufficient Credits</p>
+                <p className="text-sm text-[#ff4444]/70 mt-1">You need 4 credits to book a private court. You currently have {userCredits} credits.</p>
+              </div>
+            ) : (
+              <div className="space-y-4">
+                {/* Date Selection */}
+                <div>
+                  <label className="block text-sm font-semibold text-[#FFC700] mb-2 uppercase tracking-wide">
+                    Select Date
+                  </label>
+                  <input
+                    type="date"
+                    value={selectedPrivateCourtDate}
+                    onChange={(e) => setSelectedPrivateCourtDate(e.target.value)}
+                    min={formatDate(new Date())}
+                    className="w-full px-3 py-2 border border-[#FFC700]/30 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#FFC700] bg-[#1A1A1A] text-white"
+                  />
+                </div>
+
+                {/* Time Selection */}
+                {selectedPrivateCourtDate && (
+                  <div>
+                    <label className="block text-sm font-semibold text-[#FFC700] mb-3 uppercase tracking-wide">
+                      Select Time (2-hour booking)
+                    </label>
+                    <div className="grid grid-cols-3 gap-3">
+                      {courtTimeSlots.map((slot) => {
+                        const date = new Date(selectedPrivateCourtDate);
+                        const isAvailable = isPrivateCourtTimeSlotAvailable(date, slot.hour);
+                        const endHour = slot.hour + COURT_BOOKING_DURATION_HOURS;
+                        const endTimeLabel = getTimeLabel(endHour);
+
+                        return (
+                          <button
+                            key={slot.hour}
+                            onClick={() => {
+                              if (isAvailable) {
+                                handlePrivateCourtBooking(selectedPrivateCourtDate, slot.hour);
+                              }
+                            }}
+                            disabled={!isAvailable}
+                            className={`
+                              p-4 rounded-lg border-2 transition-all text-left
+                              ${
+                                isAvailable
+                                  ? 'border-[#FFC700]/30 bg-[#1A1A1A] hover:border-[#FFC700] hover:bg-[#FFC700]/10 cursor-pointer'
+                                  : 'border-[#FFC700]/10 bg-[#0B0B0B] opacity-40 cursor-not-allowed'
+                              }
+                            `}
+                          >
+                            <div className="font-black text-lg text-[#FFC700]">{slot.label}</div>
+                            <div className="text-xs text-[#B3B3B3] mt-1">
+                              {slot.label} - {endTimeLabel}
+                            </div>
+                            {isAvailable ? (
+                              <div className="text-xs text-[#FFC700] mt-1 font-bold">Available</div>
+                            ) : (
+                              <div className="text-xs text-[#ff4444] mt-1">Unavailable</div>
+                            )}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
+
+                {!selectedPrivateCourtDate && (
+                  <div className="p-4 border border-[#FFB000]/30 rounded-lg" style={{
+                    background: 'linear-gradient(135deg, rgba(224, 161, 0, 0.1) 0%, rgba(255, 176, 0, 0.05) 100%)'
+                  }}>
+                    <p className="text-sm text-[#FFB000]">Please select a date to view available time slots.</p>
+                  </div>
+                )}
+              </div>
+            )}
+
+            <button
+              onClick={() => {
+                setShowPrivateCourtModal(false);
+                setSelectedPrivateCourtDate('');
+              }}
+              className="w-full mt-4 py-2 bg-transparent border-2 border-[#FFC700]/50 text-[#FFC700] font-bold rounded-lg hover:bg-[#FFC700]/10 hover:border-[#FFC700] transition-all uppercase tracking-wide"
+            >
+              Close
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Admin Panel Modal */}
+      {showAdminPanel && isAdmin && (
+        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center z-50">
+          <div className="premium-card rounded-xl p-6 max-w-4xl w-full mx-4 max-h-[90vh] overflow-y-auto">
+            <div className="flex justify-between items-center mb-4">
+              <h3 className="text-2xl font-black text-[#FFC700] uppercase tracking-tight">Admin Panel</h3>
+              <button
+                onClick={() => setShowAdminPanel(false)}
+                className="text-[#B3B3B3] hover:text-[#FFC700] text-2xl leading-none font-bold transition-colors"
+              >
+                ×
+              </button>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
+              <div className="p-4 rounded-lg border border-[#FFC700]/20" style={{
+                background: 'linear-gradient(145deg, #1A1A1A 0%, #111111 100%)'
+              }}>
+                <h4 className="text-lg font-black text-[#FFC700] mb-2 uppercase">Calendar Blocks</h4>
+                <p className="text-sm text-[#B3B3B3] mb-3">Total: {calendarBlocks.length}</p>
+                <button
+                  onClick={() => {
+                    setShowBlockModal(true);
+                    setShowAdminPanel(false);
+                  }}
+                  className="w-full py-2 bg-[#FFC700] text-black font-black rounded-lg hover:bg-[#FFD400] transition-all uppercase tracking-wide text-sm"
+                >
+                  Create Block
+                </button>
+              </div>
+
+              <div className="p-4 rounded-lg border border-[#FFC700]/20" style={{
+                background: 'linear-gradient(145deg, #1A1A1A 0%, #111111 100%)'
+              }}>
+                <h4 className="text-lg font-black text-[#FFC700] mb-2 uppercase">Group Events</h4>
+                <p className="text-sm text-[#B3B3B3] mb-3">Total: {groupTrainingEvents.length}</p>
+                <button
+                  onClick={() => {
+                    setShowGroupEventModal(true);
+                    setShowAdminPanel(false);
+                  }}
+                  className="w-full py-2 bg-[#FFC700] text-black font-black rounded-lg hover:bg-[#FFD400] transition-all uppercase tracking-wide text-sm"
+                >
+                  Create Event
+                </button>
+              </div>
+            </div>
+
+            <div className="space-y-4">
+              <h4 className="text-xl font-black text-[#FFC700] uppercase tracking-tight">Recent Blocks</h4>
+              {calendarBlocks.length === 0 ? (
+                <p className="text-[#9A9A9A]">No blocks created yet</p>
+              ) : (
+                <div className="space-y-2">
+                  {calendarBlocks.slice(-5).reverse().map((block) => (
+                    <div key={block.id} className="p-3 rounded-lg border border-[#FFC700]/20 bg-[#1A1A1A]">
+                      <div className="flex justify-between items-center">
+                        <div>
+                          <p className="font-bold text-[#FFC700]">{block.reason}</p>
+                          <p className="text-sm text-[#B3B3B3]">
+                            {new Date(block.date).toLocaleDateString()} • {getTimeLabel(block.startHour)} - {getTimeLabel(block.endHour)}
+                          </p>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              <h4 className="text-xl font-black text-[#FFC700] uppercase tracking-tight mt-6">Group Training Events</h4>
+              {groupTrainingEvents.length === 0 ? (
+                <p className="text-[#9A9A9A]">No events created yet</p>
+              ) : (
+                <div className="space-y-2">
+                  {groupTrainingEvents.slice(-5).reverse().map((event) => (
+                    <div key={event.id} className="p-3 rounded-lg border border-[#FFC700]/20 bg-[#1A1A1A]">
+                      <div className="flex justify-between items-center">
+                        <div>
+                          <p className="font-black text-[#FFC700] uppercase">{event.title}</p>
+                          <p className="text-sm text-[#B3B3B3]">
+                            {new Date(event.date).toLocaleDateString()} • {getTimeLabel(event.hour)} ({event.duration}h)
+                          </p>
+                          <p className="text-xs text-[#9A9A9A] mt-1">
+                            {event.participants.length}/{event.maxParticipants} participants • {event.creditsRequired} credits
+                          </p>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <button
+              onClick={() => setShowAdminPanel(false)}
+              className="w-full mt-4 py-2 bg-transparent border-2 border-[#FFC700]/50 text-[#FFC700] font-bold rounded-lg hover:bg-[#FFC700]/10 hover:border-[#FFC700] transition-all uppercase tracking-wide"
+            >
+              Close
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Create Block Modal */}
+      {showBlockModal && (
+        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center z-50">
+          <div className="premium-card rounded-xl p-6 max-w-lg w-full mx-4 max-h-[90vh] overflow-y-auto">
+            <div className="flex justify-between items-center mb-4">
+              <h3 className="text-2xl font-black text-[#FFC700] uppercase tracking-tight">Create Calendar Block</h3>
+              <button
+                onClick={() => setShowBlockModal(false)}
+                className="text-[#B3B3B3] hover:text-[#FFC700] text-2xl leading-none font-bold transition-colors"
+              >
+                ×
+              </button>
+            </div>
+
+            <CreateBlockForm
+              onSubmit={(date, startHour, endHour, reason) => {
+                handleCreateBlock(date, startHour, endHour, reason);
+              }}
+              onCancel={() => setShowBlockModal(false)}
+            />
+          </div>
+        </div>
+      )}
+
+      {/* Create Group Event Modal */}
+      {showGroupEventModal && (
+        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center z-50">
+          <div className="premium-card rounded-xl p-6 max-w-lg w-full mx-4 max-h-[90vh] overflow-y-auto">
+            <div className="flex justify-between items-center mb-4">
+              <h3 className="text-2xl font-black text-[#FFC700] uppercase tracking-tight">Create Group Training Event</h3>
+              <button
+                onClick={() => setShowGroupEventModal(false)}
+                className="text-[#B3B3B3] hover:text-[#FFC700] text-2xl leading-none font-bold transition-colors"
+              >
+                ×
+              </button>
+            </div>
+
+            <CreateGroupEventForm
+              onSubmit={(date, hour, duration, title, description, maxParticipants, creditsRequired) => {
+                handleCreateGroupEvent(date, hour, duration, title, description, maxParticipants, creditsRequired);
+              }}
+              onCancel={() => setShowGroupEventModal(false)}
+            />
+          </div>
+        </div>
+      )}
+
       {/* Footer */}
-      <footer className="bg-white border-t border-gray-200 px-6 py-4 mt-8">
-        <p className="text-center text-gray-600">Footer</p>
+      <footer className="premium-card border-t border-[#FFC700]/20 px-6 py-4 mt-8">
+        <p className="text-center text-[#9A9A9A] uppercase tracking-wide text-sm">Blazing Paddles</p>
       </footer>
+      </div>
     </div>
   );
 }
+
+// Helper function for time labels (used in form components)
+const getTimeLabelForForm = (hour: number): string => {
+  const period = hour >= 12 ? 'PM' : 'AM';
+  const displayHour = hour > 12 ? hour - 12 : hour === 0 ? 12 : hour;
+  return `${displayHour} ${period}`;
+};
+
+// Create Block Form Component
+function CreateBlockForm({ onSubmit, onCancel }: { 
+  onSubmit: (date: string, startHour: number, endHour: number, reason: string) => void;
+  onCancel: () => void;
+}) {
+  const [date, setDate] = useState('');
+  const [startHour, setStartHour] = useState(8);
+  const [endHour, setEndHour] = useState(10);
+  const [reason, setReason] = useState('');
+
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (date && startHour < endHour && reason) {
+      onSubmit(date, startHour, endHour, reason);
+    } else {
+      alert('Please fill in all fields correctly');
+    }
+  };
+
+  return (
+    <form onSubmit={handleSubmit} className="space-y-4">
+      <div>
+        <label className="block text-sm font-semibold text-[#FFC700] mb-2 uppercase tracking-wide">Date</label>
+        <input
+          type="date"
+          value={date}
+          onChange={(e) => setDate(e.target.value)}
+          min={new Date().toISOString().split('T')[0]}
+          className="w-full px-3 py-2 border border-[#FFC700]/30 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#FFC700] bg-[#1A1A1A] text-white"
+          required
+        />
+      </div>
+
+      <div className="grid grid-cols-2 gap-4">
+        <div>
+          <label className="block text-sm font-semibold text-[#FFC700] mb-2 uppercase tracking-wide">Start Hour</label>
+          <select
+            value={startHour}
+            onChange={(e) => setStartHour(Number(e.target.value))}
+            className="w-full px-3 py-2 border border-[#FFC700]/30 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#FFC700] bg-[#1A1A1A] text-white"
+            required
+          >
+            {Array.from({ length: 13 }, (_, i) => i + 8).map(hour => (
+              <option key={hour} value={hour}>{getTimeLabelForForm(hour)}</option>
+            ))}
+          </select>
+        </div>
+
+        <div>
+          <label className="block text-sm font-semibold text-[#FFC700] mb-2 uppercase tracking-wide">End Hour</label>
+          <select
+            value={endHour}
+            onChange={(e) => setEndHour(Number(e.target.value))}
+            className="w-full px-3 py-2 border border-[#FFC700]/30 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#FFC700] bg-[#1A1A1A] text-white"
+            required
+          >
+            {Array.from({ length: 13 }, (_, i) => i + 8).map(hour => (
+              <option key={hour} value={hour}>{getTimeLabelForForm(hour)}</option>
+            ))}
+          </select>
+        </div>
+      </div>
+
+      <div>
+        <label className="block text-sm font-semibold text-[#FFC700] mb-2 uppercase tracking-wide">Reason</label>
+        <input
+          type="text"
+          value={reason}
+          onChange={(e) => setReason(e.target.value)}
+          className="w-full px-3 py-2 border border-[#FFC700]/30 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#FFC700] bg-[#1A1A1A] text-white"
+          placeholder="e.g., Maintenance, Private Event"
+          required
+        />
+      </div>
+
+      <div className="flex gap-3">
+        <button
+          type="submit"
+          className="flex-1 py-2 bg-[#FFC700] text-black font-black rounded-lg hover:bg-[#FFD400] transition-all uppercase tracking-wide"
+        >
+          Create Block
+        </button>
+        <button
+          type="button"
+          onClick={onCancel}
+          className="flex-1 py-2 bg-transparent border-2 border-[#FFC700]/50 text-[#FFC700] font-bold rounded-lg hover:bg-[#FFC700]/10 hover:border-[#FFC700] transition-all uppercase tracking-wide"
+        >
+          Cancel
+        </button>
+      </div>
+    </form>
+  );
+}
+
+// Create Group Event Form Component
+function CreateGroupEventForm({ onSubmit, onCancel }: {
+  onSubmit: (date: string, hour: number, duration: number, title: string, description: string, maxParticipants: number, creditsRequired: number) => void;
+  onCancel: () => void;
+}) {
+  const [date, setDate] = useState('');
+  const [hour, setHour] = useState(8);
+  const [duration, setDuration] = useState(2);
+  const [title, setTitle] = useState('');
+  const [description, setDescription] = useState('');
+  const [maxParticipants, setMaxParticipants] = useState(12);
+  const [creditsRequired, setCreditsRequired] = useState(2);
+
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (date && title && description) {
+      onSubmit(date, hour, duration, title, description, maxParticipants, creditsRequired);
+    } else {
+      alert('Please fill in all required fields');
+    }
+  };
+
+  return (
+    <form onSubmit={handleSubmit} className="space-y-4">
+      <div>
+        <label className="block text-sm font-semibold text-[#FFC700] mb-2 uppercase tracking-wide">Event Title</label>
+        <input
+          type="text"
+          value={title}
+          onChange={(e) => setTitle(e.target.value)}
+          className="w-full px-3 py-2 border border-[#FFC700]/30 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#FFC700] bg-[#1A1A1A] text-white"
+          placeholder="e.g., Advanced Skills Clinic"
+          required
+        />
+      </div>
+
+      <div>
+        <label className="block text-sm font-semibold text-[#FFC700] mb-2 uppercase tracking-wide">Description</label>
+        <textarea
+          value={description}
+          onChange={(e) => setDescription(e.target.value)}
+          className="w-full px-3 py-2 border border-[#FFC700]/30 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#FFC700] bg-[#1A1A1A] text-white"
+          rows={3}
+          placeholder="Event description..."
+          required
+        />
+      </div>
+
+      <div>
+        <label className="block text-sm font-semibold text-[#FFC700] mb-2 uppercase tracking-wide">Date</label>
+        <input
+          type="date"
+          value={date}
+          onChange={(e) => setDate(e.target.value)}
+          min={new Date().toISOString().split('T')[0]}
+          className="w-full px-3 py-2 border border-[#FFC700]/30 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#FFC700] bg-[#1A1A1A] text-white"
+          required
+        />
+      </div>
+
+      <div className="grid grid-cols-2 gap-4">
+        <div>
+          <label className="block text-sm font-semibold text-[#FFC700] mb-2 uppercase tracking-wide">Start Time</label>
+          <select
+            value={hour}
+            onChange={(e) => setHour(Number(e.target.value))}
+            className="w-full px-3 py-2 border border-[#FFC700]/30 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#FFC700] bg-[#1A1A1A] text-white"
+            required
+          >
+            {Array.from({ length: 13 }, (_, i) => i + 8).map(h => (
+              <option key={h} value={h}>{getTimeLabelForForm(h)}</option>
+            ))}
+          </select>
+        </div>
+
+        <div>
+          <label className="block text-sm font-semibold text-[#FFC700] mb-2 uppercase tracking-wide">Duration (hours)</label>
+          <select
+            value={duration}
+            onChange={(e) => setDuration(Number(e.target.value))}
+            className="w-full px-3 py-2 border border-[#FFC700]/30 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#FFC700] bg-[#1A1A1A] text-white"
+            required
+          >
+            <option value={1}>1 hour</option>
+            <option value={2}>2 hours</option>
+            <option value={3}>3 hours</option>
+          </select>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-2 gap-4">
+        <div>
+          <label className="block text-sm font-semibold text-[#FFC700] mb-2 uppercase tracking-wide">Max Participants</label>
+          <input
+            type="number"
+            value={maxParticipants}
+            onChange={(e) => setMaxParticipants(Number(e.target.value))}
+            min={1}
+            max={50}
+            className="w-full px-3 py-2 border border-[#FFC700]/30 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#FFC700] bg-[#1A1A1A] text-white"
+            required
+          />
+        </div>
+
+        <div>
+          <label className="block text-sm font-semibold text-[#FFC700] mb-2 uppercase tracking-wide">Credits Required</label>
+          <input
+            type="number"
+            value={creditsRequired}
+            onChange={(e) => setCreditsRequired(Number(e.target.value))}
+            min={1}
+            className="w-full px-3 py-2 border border-[#FFC700]/30 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#FFC700] bg-[#1A1A1A] text-white"
+            required
+          />
+        </div>
+      </div>
+
+      <div className="flex gap-3">
+        <button
+          type="submit"
+          className="flex-1 py-2 bg-[#FFC700] text-black font-black rounded-lg hover:bg-[#FFD400] transition-all uppercase tracking-wide"
+        >
+          Create Event
+        </button>
+        <button
+          type="button"
+          onClick={onCancel}
+          className="flex-1 py-2 bg-transparent border-2 border-[#FFC700]/50 text-[#FFC700] font-bold rounded-lg hover:bg-[#FFC700]/10 hover:border-[#FFC700] transition-all uppercase tracking-wide"
+        >
+          Cancel
+        </button>
+      </div>
+    </form>
+  );
+}
+

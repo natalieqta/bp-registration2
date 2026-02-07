@@ -1,29 +1,118 @@
 @import "tailwindcss";
 
 :root {
-  --background: #f5f5f5;
-  --foreground: #1a1a1a;
-  --neon-yellow: #ffeb3b;
-  --deep-green: #1b5e20;
-  --deep-blue: #0d47a1;
-  --court-green: #2e7d32;
-  --court-blue: #1565c0;
+  /* Primary Base - Charcoal / Near-Black */
+  --charcoal-black: #0B0B0B;
+  --charcoal-dark: #0F0F0F;
+  --charcoal-base: #111111;
+  
+  /* Primary Accent - Electric Gold / Blaze Yellow */
+  --electric-gold: #FFC700;
+  --blaze-yellow: #FFD400;
+  --gold-accent: #FFC700;
+  
+  /* Secondary Neutrals */
+  --warm-graphite: #1A1A1A;
+  --warm-graphite-light: #222222;
+  --soft-gray: #9A9A9A;
+  --soft-gray-light: #B3B3B3;
+  
+  /* Supporting Highlights */
+  --court-green: #2E6B57;
+  --court-green-light: #3A7F67;
+  --warm-glow: #E0A100;
+  --warm-amber: #FFB000;
+  
+  /* Text Colors */
+  --text-primary: #ffffff;
+  --text-secondary: #B3B3B3;
+  --text-muted: #9A9A9A;
 }
 
 @theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --color-neon-yellow: var(--neon-yellow);
-  --color-deep-green: var(--deep-green);
-  --color-deep-blue: var(--deep-blue);
+  --color-charcoal-black: var(--charcoal-black);
+  --color-charcoal-base: var(--charcoal-base);
+  --color-electric-gold: var(--electric-gold);
+  --color-blaze-yellow: var(--blaze-yellow);
+  --color-warm-graphite: var(--warm-graphite);
+  --color-warm-graphite-light: var(--warm-graphite-light);
+  --color-soft-gray: var(--soft-gray);
+  --color-soft-gray-light: var(--soft-gray-light);
   --color-court-green: var(--court-green);
-  --color-court-blue: var(--court-blue);
+  --color-warm-glow: var(--warm-glow);
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
 }
 
 body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: var(--font-geist-sans), Arial, Helvetica, sans-serif;
+  background: var(--charcoal-black);
+  background-image: 
+    radial-gradient(ellipse at top right, rgba(255, 199, 0, 0.08) 0%, transparent 50%),
+    radial-gradient(ellipse at bottom left, rgba(224, 161, 0, 0.05) 0%, transparent 50%);
+  background-attachment: fixed;
+  color: var(--text-primary);
+  font-family: var(--font-geist-sans), -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  min-height: 100vh;
+}
+
+/* Golden hour glow effect */
+@keyframes goldenGlow {
+  0%, 100% {
+    box-shadow: 0 0 20px rgba(255, 199, 0, 0.25), 0 0 40px rgba(255, 199, 0, 0.1);
+  }
+  50% {
+    box-shadow: 0 0 30px rgba(255, 199, 0, 0.4), 0 0 60px rgba(255, 199, 0, 0.15);
+  }
+}
+
+.golden-glow {
+  animation: goldenGlow 3s ease-in-out infinite;
+}
+
+/* Premium card styling - Sports venue aesthetic */
+.premium-card {
+  background: linear-gradient(145deg, var(--warm-graphite) 0%, var(--charcoal-base) 100%);
+  border: 1px solid rgba(255, 199, 0, 0.15);
+  backdrop-filter: blur(12px);
+  box-shadow: 
+    0 8px 32px rgba(0, 0, 0, 0.6),
+    0 0 0 1px rgba(255, 199, 0, 0.1),
+    inset 0 1px 0 rgba(255, 255, 255, 0.05);
+}
+
+/* Tech-forward grid lines - subtle golden hour */
+.tech-grid {
+  background-image: 
+    linear-gradient(rgba(255, 199, 0, 0.02) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 199, 0, 0.02) 1px, transparent 1px);
+  background-size: 24px 24px;
+  position: relative;
+}
+
+/* Bold, high-contrast typography */
+h1, h2, h3, h4, h5, h6 {
+  font-weight: 900;
+  letter-spacing: -0.03em;
+  text-transform: uppercase;
+  color: var(--text-primary);
+}
+
+/* Cinematic lighting effects */
+.cinematic-glow {
+  position: relative;
+}
+
+.cinematic-glow::before {
+  content: '';
+  position: absolute;
+  inset: -2px;
+  background: linear-gradient(135deg, rgba(255, 199, 0, 0.3), rgba(255, 212, 0, 0.1), transparent);
+  border-radius: inherit;
+  z-index: -1;
+  opacity: 0;
+  transition: opacity 0.3s ease;
+}
+
+.cinematic-glow:hover::before {
+  opacity: 1;
 }
