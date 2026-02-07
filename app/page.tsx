@@ -304,6 +304,7 @@ export default function Home() {
   };
 
   // Check if a court time slot is available (considering 2-hour bookings and blocks)
+  // This checks if the time slot structure allows bookings (not if specific court types are full)
   const isCourtTimeSlotAvailable = (date: Date, hour: number): boolean => {
     // Check if date/time is in the past
     if (isPastDateTime(date, hour)) {
@@ -321,26 +322,10 @@ export default function Home() {
       return false;
     }
 
-    const dateStr = formatDate(date);
-    const courtReservations = reservations.filter(
-      (r) => r.type === 'court' && r.date === dateStr
-    ) as CourtReservation[];
-
-    // Check if this hour conflicts with any existing 2-hour booking
-    for (const reservation of courtReservations) {
-      // A booking at reservation.hour covers reservation.hour to reservation.hour + 2
-      // So hour conflicts if: reservation.hour <= hour < reservation.hour + 2
-      if (hour >= reservation.hour && hour < reservation.hour + COURT_BOOKING_DURATION_HOURS) {
-        return false;
-      }
-      // Also check if a booking starting at hour would conflict with this reservation
-      // A booking starting at hour would cover hour to hour + 2
-      // It conflicts if: hour < reservation.hour + 2 && hour + 2 > reservation.hour
-      if (hour < reservation.hour + COURT_BOOKING_DURATION_HOURS && hour + COURT_BOOKING_DURATION_HOURS > reservation.hour) {
-        return false;
-      }
-    }
-
+    // Note: We don't check for conflicts with existing bookings here because
+    // multiple people can book the same time slot (different court types or same type if not full)
+    // The availability of specific court types is checked in the booking modal
+    
     return true;
   };
 
