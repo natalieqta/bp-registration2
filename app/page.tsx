@@ -252,7 +252,17 @@ export default function Home() {
   const currentYear = effectiveSelectedDate.getFullYear();
 
   const formatDate = (date: Date): string => {
-    return date.toISOString().split('T')[0];
+    // Format date as YYYY-MM-DD in local timezone to avoid timezone shifts
+    const year = date.getFullYear();
+    const month = String(date.getMonth() + 1).padStart(2, '0');
+    const day = String(date.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
+  };
+
+  // Parse date string (YYYY-MM-DD) to Date object in local timezone
+  const parseDateString = (dateString: string): Date => {
+    const [year, month, day] = dateString.split('-').map(Number);
+    return new Date(year, month - 1, day);
   };
 
   const getDateLabel = (date: Date): string => {
@@ -289,9 +299,29 @@ export default function Home() {
   // Check if a date/time is in the past
   const isPastDateTime = (date: Date, hour: number): boolean => {
     const now = new Date();
+    // Create a new date object to avoid mutating the original
     const bookingDateTime = new Date(date);
     bookingDateTime.setHours(hour, 0, 0, 0);
-    return bookingDateTime < now;
+    
+    // Compare dates - if booking date is before today, it's in the past
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const bookingDateOnly = new Date(date);
+    bookingDateOnly.setHours(0, 0, 0, 0);
+    
+    // If booking date is before today, it's in the past
+    if (bookingDateOnly < today) {
+      return true;
+    }
+    
+    // If booking date is today, check if the hour has passed
+    if (bookingDateOnly.getTime() === today.getTime()) {
+      const currentHour = now.getHours();
+      return hour < currentHour;
+    }
+    
+    // If booking date is in the future, it's not in the past
+    return false;
   };
 
   // Check if a time slot is blocked
@@ -473,26 +503,26 @@ export default function Home() {
       return;
     }
 
-    const bookingDate = new Date(selectedTimeSlot.date);
+    const bookingDate = parseDateString(selectedTimeSlot.date);
     if (isPastDateTime(bookingDate, selectedTimeSlot.hour)) {
       alert('Cannot book a time slot in the past');
       return;
     }
 
     // Check if the time slot is available (considering 2-hour bookings)
-    if (!isCourtTimeSlotAvailable(new Date(selectedTimeSlot.date), selectedTimeSlot.hour)) {
+    if (!isCourtTimeSlotAvailable(bookingDate, selectedTimeSlot.hour)) {
       alert('This time slot is not available (conflicts with existing 2-hour booking)');
       return;
     }
 
     // Check if user is already signed up
-    if (isUserSignedUp(new Date(selectedTimeSlot.date), selectedTimeSlot.hour)) {
+    if (isUserSignedUp(bookingDate, selectedTimeSlot.hour)) {
       alert('You are already signed up for this time slot');
       return;
     }
 
     // Check if court type is full
-    const signups = getSignupsForTimeSlot(new Date(selectedTimeSlot.date), selectedTimeSlot.hour);
+    const signups = getSignupsForTimeSlot(bookingDate, selectedTimeSlot.hour);
     if (signups[courtType].length >= MAX_PARTICIPANTS) {
       alert(`${courtType.charAt(0).toUpperCase() + courtType.slice(1)} court is full`);
       return;
@@ -524,13 +554,13 @@ export default function Home() {
       return;
     }
 
-    const bookingDate = new Date(selectedTimeSlot.date);
+    const bookingDate = parseDateString(selectedTimeSlot.date);
     if (isPastDateTime(bookingDate, selectedTimeSlot.hour)) {
       alert('Cannot book a time slot in the past');
       return;
     }
 
-    const date = new Date(selectedTimeSlot.date);
+    const date = bookingDate;
     const hour = selectedTimeSlot.hour;
     const minute = 0; // Start at the top of the hour
 
@@ -643,7 +673,7 @@ export default function Home() {
     maxParticipants: number,
     creditsRequired: number
   ) => {
-    const eventDate = new Date(date);
+    const eventDate = parseDateString(date);
     if (isPastDateTime(eventDate, hour)) {
       alert('Cannot create an event for a time in the past');
       return;
@@ -1305,7 +1335,7 @@ export default function Home() {
               background: 'linear-gradient(145deg, #1A1A1A 0%, #111111 100%)'
             }}>
               <p className="text-sm text-[#B3B3B3]">
-                <strong className="text-[#FFC700]">Date:</strong> {new Date(selectedTimeSlot.date).toLocaleDateString('en-US', { 
+                <strong className="text-[#FFC700]">Date:</strong> {parseDateString(selectedTimeSlot.date).toLocaleDateString('en-US', { 
                   weekday: 'long', 
                   year: 'numeric', 
                   month: 'long', 
@@ -1320,14 +1350,14 @@ export default function Home() {
               </p>
             </div>
 
-            {!isCourtTimeSlotAvailable(new Date(selectedTimeSlot.date), selectedTimeSlot.hour) ? (
+            {!isCourtTimeSlotAvailable(parseDateString(selectedTimeSlot.date), selectedTimeSlot.hour) ? (
               <div className="p-4 border border-[#ff4444]/30 rounded-lg mb-4" style={{
                 background: 'linear-gradient(145deg, #0B0B0B 0%, #111111 100%)'
               }}>
                 <p className="font-bold text-[#ff4444]">This time slot is not available for new bookings.</p>
                 <p className="text-sm text-[#ff4444]/70 mt-1">It may be blocked by an existing 2-hour court booking.</p>
               </div>
-            ) : isUserSignedUp(new Date(selectedTimeSlot.date), selectedTimeSlot.hour) ? (
+            ) : isUserSignedUp(parseDateString(selectedTimeSlot.date), selectedTimeSlot.hour) ? (
               <div className="p-4 border-2 border-[#FFC700] rounded-lg mb-4" style={{
                 background: 'linear-gradient(135deg, rgba(255, 199, 0, 0.2) 0%, rgba(255, 212, 0, 0.15) 100%)'
               }}>
@@ -1337,7 +1367,7 @@ export default function Home() {
               <div className="space-y-3 mb-4">
                 {COURT_TYPES.map((courtType) => {
                   const signups = getSignupsForTimeSlot(
-                    new Date(selectedTimeSlot.date),
+                    parseDateString(selectedTimeSlot.date),
                     selectedTimeSlot.hour
                   );
                   const count = signups[courtType].length;
@@ -1453,7 +1483,7 @@ export default function Home() {
               background: 'linear-gradient(145deg, #1A1A1A 0%, #111111 100%)'
             }}>
               <p className="text-sm text-[#B3B3B3]">
-                <strong className="text-[#FFC700]">Date:</strong> {new Date(selectedTimeSlot.date).toLocaleDateString('en-US', { 
+                <strong className="text-[#FFC700]">Date:</strong> {parseDateString(selectedTimeSlot.date).toLocaleDateString('en-US', { 
                   weekday: 'long', 
                   year: 'numeric', 
                   month: 'long', 
@@ -1468,7 +1498,7 @@ export default function Home() {
               </p>
             </div>
 
-            {hasUserBayReservation(new Date(selectedTimeSlot.date), selectedTimeSlot.hour) ? (
+            {hasUserBayReservation(parseDateString(selectedTimeSlot.date), selectedTimeSlot.hour) ? (
               <div className="p-4 border-2 border-[#FFC700] rounded-lg mb-4" style={{
                 background: 'linear-gradient(135deg, rgba(255, 199, 0, 0.2) 0%, rgba(255, 212, 0, 0.15) 100%)'
               }}>
@@ -1489,7 +1519,7 @@ export default function Home() {
                           ? `${endHour}:${endMinute.toString().padStart(2, '0')}`
                           : getTimeLabel(endHour);
                         
-                        const date = new Date(selectedTimeSlot.date);
+                        const date = parseDateString(selectedTimeSlot.date);
                         const availableBays = getAvailableBays(date, selectedTimeSlot.hour, 0, duration);
                         const hasAvailability = availableBays.length > 0;
                         
@@ -1542,7 +1572,7 @@ export default function Home() {
                       {BAYS.map((bay, index) => {
                         const bayNumber = index + 1;
                         const isAvailable = isBayTimeSlotAvailable(
-                          new Date(selectedTimeSlot.date),
+                          parseDateString(selectedTimeSlot.date),
                           selectedTimeSlot.hour,
                           0,
                           selectedBayDuration,
